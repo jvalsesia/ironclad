@@ -157,7 +157,7 @@ For each selected feature, run two checks:
 
 Either prompt aborting takes the whole wave with it. Same reason as **a)**: keeps the semantics simple.
 
-2.4 — **Pre-flight `gh` check.** First check the binary exists: `command -v gh >/dev/null 2>&1`. If absent, abort: `"gh CLI not installed; PR creation requires it. Install via 'brew install gh' (or your platform's equivalent) and retry."`. Then run `gh auth status`. If not authenticated, abort: `"gh CLI not authenticated; PR creation will fail. Run 'gh auth login' and retry."`. Cheaper to fail here than after 30min of cycle work.
+2.4 — **Pre-flight `gh` check.** First check the binary exists: `command -v gh >/dev/null 2>&1`. If absent, abort: `"gh CLI not installed; PR creation requires it. Install it with your platform's package manager (e.g. 'brew install gh', 'sudo apt install gh') and retry."`. Then run `gh auth status`. If not authenticated, abort: `"gh CLI not authenticated; PR creation will fail. Run 'gh auth login' and retry."`. Cheaper to fail here than after 30min of cycle work.
 
 ### Step 3 — Initialize wave artifacts
 
@@ -177,10 +177,15 @@ selected_features=F03:video-upload,F05:transcription,F07:admin-panel
 
 3.2 — Create `.claude/worktrees/.wave-<run-id>/status/` (empty dir for now).
 
-3.3 — Copy (or symlink — copy is safer if the skills folder is on a different filesystem) the bundled scripts:
-- `scripts/team-driver.sh` → `.claude/worktrees/.wave-<run-id>/team-driver.sh`
+3.3 — Copy (or symlink — copy is safer if the skills folder is on a different filesystem) **every** bundled script into the wave dir — all six are run from there:
 - `scripts/dashboard.sh` → `.claude/worktrees/.wave-<run-id>/dashboard.sh`
-Make both executable (`chmod +x`). The skill ships them with the executable bit already set, but copying may strip it depending on the filesystem.
+- `scripts/spawn-team.sh` → `.claude/worktrees/.wave-<run-id>/spawn-team.sh`
+- `scripts/team-driver.sh` → `.claude/worktrees/.wave-<run-id>/team-driver.sh`
+- `scripts/services-tail.sh` → `.claude/worktrees/.wave-<run-id>/services-tail.sh`
+- `scripts/ports-tail.sh` → `.claude/worktrees/.wave-<run-id>/ports-tail.sh`
+- `scripts/wave-tick.sh` → `.claude/worktrees/.wave-<run-id>/wave-tick.sh`
+
+Make all of them executable (`chmod +x`). The skill ships them with the executable bit already set, but copying may strip it depending on the filesystem.
 
 ### Step 4 — Create worktrees and tmux session
 
@@ -201,7 +206,7 @@ The dashboard script takes the wave dir as its argument; it reads each team's jo
 
 ### Step 5 — Dispatch the initial batch
 
-Throttling and queue management are **split between Step 5 (initial dispatch) and Step 6 (respawn from queue)**. This avoids any single Bash call needing to run longer than the platform's timeout — only short, individual `tmux new-window` invocations happen here.
+Throttling and queue management are **split between Step 5 (initial dispatch) and Step 6 (respawn from queue)**. This avoids any single Bash call needing to run longer than the platform's timeout — only short, individual `spawn-team.sh` invocations happen here.
 
 5.1 — Split the resolved `(feature_id, slug)` pair list into two:
 - **`initial`** — the first `min(max-parallel, len(selected))` pairs. Spawn these now.
@@ -226,38 +231,28 @@ Throttling and queue management are **split between Step 5 (initial dispatch) an
 - **Pane .1 (top right):** `services-tail.sh` — `tail -F <worktree>/.pids/{backend,web}.log`. Project-specific log paths (works for projects that put service logs in `.pids/`).
 - **Pane .2 (bottom right):** `ports-tail.sh` — `lsof`-based, **project-agnostic** discovery of TCP ports listened on by processes whose CWD is inside the worktree.
 
-Concrete shape (per pair):
+Spawn each team through `spawn-team.sh` — never with hand-written `tmux` commands. The same script is used by Step 6's respawn, so every team gets an identical window:
 
 ```bash
 WAVE_DIR=".claude/worktrees/.wave-<run-id>"
-SESSION="iaet-<wave-tag>-<run-id>"
-WAVE_ABS="$(pwd)/$WAVE_DIR"
-TAIL="<verbatim Family 3 tail>"
-WORKTREE_ABS="$(pwd)/.claude/worktrees/F03-video-upload"
-WIN="F03-video-upload"
 
-# 1) Create the team window with claude as the sole pane.
-tmux new-window -t "$SESSION" -n "$WIN" \
-    "$WAVE_ABS/team-driver.sh F03 video-upload $WAVE_ABS \"$TAIL\""
-
-# 2) Vertical divider — right column = services-tail (pane .1).
-#    -p 50 → right column = 50% of window width, claude = 50%.
-tmux split-window -h -p 50 -t "${SESSION}:${WIN}" \
-    "$WAVE_ABS/services-tail.sh $WORKTREE_ABS"
-
-# 3) Horizontal divider INSIDE the right column — bottom = ports-tail (pane .2).
-#    -l 14 makes ports-tail 14 rows tall (room for header + ~7 listening ports
-#    with full command lines). Adjust if your project binds more or fewer.
-tmux split-window -v -l 14 -t "${SESSION}:${WIN}.1" \
-    "$WAVE_ABS/ports-tail.sh $WORKTREE_ABS"
-
-# 4) Capture ONLY the claude pane (.0) for the .log debug artifact.
-tmux pipe-pane -t "${SESSION}:${WIN}.0" -o "cat >> $WAVE_ABS/status/F03.log"
+"$WAVE_DIR/spawn-team.sh" "$WAVE_DIR" F03 video-upload
 ```
 
-Important: do NOT pipe the team-driver through `| tee` — that breaks claude's TTY (claude detects "not a terminal" and produces no output). Use `tmux pipe-pane` after window creation; it captures pane output without interfering with the TTY of the running process.
+(Repeat per pair in `initial`.) Each call returns immediately — none of them block. The script reads the session name and the Family 3 `tail` from `wave.meta`, so nothing else is passed.
 
-(Repeat per pair in `initial`.) Each `tmux ...` call returns immediately — none of them block.
+What `spawn-team.sh` does:
+1. Writes the team's initial status file (`status=running`, `phase=spawning`) **before** the window exists, so a tick that runs right after the spawn already counts the team as running.
+2. Creates the team window with claude as the sole pane (`team-driver.sh`).
+3. Splits a right column at 50% width for `services-tail.sh` (`-l 50%`, not `-p 50`: tmux 3.4 rejects `-p` with "size missing" in a detached session).
+4. Splits the right column again, 14 rows at the bottom, for `ports-tail.sh` (room for header + ~7 listening ports with full command lines).
+5. Attaches `tmux pipe-pane` to the claude pane only, writing `status/F<ID>.log`.
+
+Panes are targeted by pane id, not by index, so the layout is correct whatever the user's `base-index` / `pane-base-index`. The `.0` / `.1` / `.2` labels above are descriptive only.
+
+If the window cannot be created, the script flips the status file to `status=aborted` with `abort_reason=spawn-failed` and exits non-zero — the feature is terminal and does not hold a slot. A failed side pane only prints a warning; the team still runs.
+
+Important: the team-driver is never piped through `| tee` — that breaks claude's TTY (claude detects "not a terminal" and produces no output). `tmux pipe-pane` captures pane output without interfering with the TTY of the running process.
 
 5.3 — Persist the queue at `.claude/worktrees/.wave-<run-id>/queue.txt` (one `F<ID>:<slug>` per line). Step 6 consumes it.
 
@@ -265,9 +260,9 @@ What the team driver (`scripts/team-driver.sh`) does inside each window:
 - Initial status file write (`status=running`, `started_at=<now>`, `phase=spawning`).
 - `cd` into the worktree.
 - `exec claude --dangerously-skip-permissions "/implement-and-evaluate F<ID> <tail>"` (foreground in the tmux window).
-- On `claude` exit (any reason): parse the team's journal final-verdict block from `docs/F<ID>-<slug>/orchestration-*.md` (newest), write the terminal status file, then `sleep 99999` (keeps the window alive for inspection until `tmux kill-window` or session teardown).
+- On `claude` exit (any reason): parse the team's journal final-verdict block from `docs/F<ID>-<slug>/orchestration-*.md` (newest), write the terminal status file (the `journal=` field is an absolute path), then `sleep 99999` (keeps the window alive for inspection until `tmux kill-window` or session teardown).
 
-The `.log` files captured by `tee` in 5.2 are debug-only artifacts — neither the dashboard nor Step 7 consumes them.
+The `.log` files captured by `tmux pipe-pane` in 5.2 are debug-only artifacts — neither the dashboard nor Step 7 consumes them.
 
 ### Step 6 — Wait for terminal status, respawn from queue, enforce timeout
 
@@ -290,61 +285,32 @@ loop:
   RUNNING_COUNT = (still-running teams)
   while RUNNING_COUNT < max_parallel AND queue non-empty:
     pop next (F<ID>, slug) from queue.txt
-    tmux new-window … team-driver.sh F<ID> <slug> …
+    spawn-team.sh <wave-dir> F<ID> <slug>
     RUNNING_COUNT += 1
 
   if queue empty AND every spawned team is done: break
   else: schedule next tick (Monitor / ScheduleWakeup), exit this turn
 ```
 
-Concrete tick implementation (one short Bash call, well under the 10-minute cap):
+Concrete tick implementation — one short Bash call, well under the 10-minute cap. Run the bundled script; do not re-implement the loop inline:
 
 ```bash
 WAVE_DIR=".claude/worktrees/.wave-<run-id>"
-SESSION="iaet-<wave-tag>-<run-id>"
-TIMEOUT_S=$((<team-timeout-minutes> * 60))
-NOW=$(date -u +%s)
 
-# 1. Enforce timeout on running teams.
-for sf in "$WAVE_DIR"/status/*.status; do
-    [ -f "$sf" ] || continue
-    status=$(awk -F= '$1=="status"     { sub(/^[^=]+=/,""); print; exit }' "$sf")
-    started=$(awk -F= '$1=="started_at" { sub(/^[^=]+=/,""); print; exit }' "$sf")
-    [ "$status" = "running" ] || continue
-    s0=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started" +%s 2>/dev/null || echo "$NOW")
-    if [ $((NOW - s0)) -gt "$TIMEOUT_S" ]; then
-        fid=$(basename "$sf" .status)
-        slug=$(awk -F= '$1=="feature_slug" { sub(/^[^=]+=/,""); print; exit }' "$sf")
-        tmux kill-window -t "${SESSION}:${fid}-${slug}" 2>/dev/null || true
-        # Re-write status atomically — preserve fields, flip status to timeout.
-        # (Implementation detail; see scripts/team-driver.sh's write_status pattern.)
-    fi
-done
-
-# 2. Respawn from queue if capacity available.
-running=$(grep -lE '^status=running$' "$WAVE_DIR"/status/*.status 2>/dev/null | wc -l | tr -d ' ')
-while [ "$running" -lt "<max-parallel>" ] && [ -s "$WAVE_DIR/queue.txt" ]; do
-    line=$(head -n1 "$WAVE_DIR/queue.txt")
-    fid="${line%%:*}"; slug="${line#*:}"
-    sed -i.bak '1d' "$WAVE_DIR/queue.txt" && rm -f "$WAVE_DIR/queue.txt.bak"
-    tmux new-window -t "$SESSION" -n "${fid}-${slug}" \
-        "$WAVE_DIR/team-driver.sh $fid $slug $WAVE_DIR \"<TAIL>\" 2>&1 | tee -a $WAVE_DIR/status/${fid}.log"
-    running=$((running + 1))
-done
-
-# 3. Done condition: queue empty AND every status file is terminal.
-queue_empty=$([ ! -s "$WAVE_DIR/queue.txt" ] && echo 1 || echo 0)
-non_terminal=$(grep -lE '^status=running$' "$WAVE_DIR"/status/*.status 2>/dev/null | wc -l | tr -d ' ')
-spawned=$(ls "$WAVE_DIR"/status/*.status 2>/dev/null | wc -l | tr -d ' ')
-selected_total=<N>
-if [ "$queue_empty" -eq 1 ] && [ "$non_terminal" -eq 0 ] && [ "$spawned" -eq "$selected_total" ]; then
-    echo "ALL_DONE"  # Main reads this and proceeds to Step 7.
-fi
+"$WAVE_DIR/wave-tick.sh" "$WAVE_DIR"
 ```
+
+The script reads `max_parallel`, `team_timeout`, `selected_features` and the session name from `wave.meta`. Each tick it:
+
+1. **Enforces the timeout.** For every team still `running` past `team_timeout`, it kills the team's tmux window and atomically rewrites the status file: every existing field is preserved, and `status=timeout`, `phase=done`, `finished_at`, `last_updated`, `abort_reason=wall-clock-timeout-<N>m` and `journal=<latest, when one exists>` are set. It prints `TIMEOUT F<ID>` for each.
+2. **Respawns from the queue.** While fewer than `max_parallel` teams are running and `queue.txt` is non-empty, it pops the first line and calls `spawn-team.sh` (same three-pane window as Step 5.2).
+3. **Reports.** It prints one summary line — `running=<N> queued=<N> done=<N> total=<N>` — and, when the queue is empty, nothing is running, and every selected feature has a status file, a final `ALL_DONE` line.
+
+Main reads the output: on `ALL_DONE`, proceed to Step 7; otherwise schedule the next tick.
 
 A short chat status update each tick (`"3 teams running, 1 in queue, 2 done"`) is acceptable but optional.
 
-6.2 — **Timeout side effects**: the worktree and tmux window of a timed-out team are preserved (`clean worktrees` does NOT delete timeout teams). `status=timeout` is a terminal state for wave purposes and is mapped to `fail` in any reconcile (Step 7.1).
+6.2 — **Timeout side effects**: the tick kills the timed-out team's tmux window; its worktree is preserved (`clean worktrees` does NOT delete timeout teams). `status=timeout` is a terminal state for wave purposes and is mapped to `fail` in any reconcile (Step 7.1).
 
 ### Step 7 — Consolidate, finalize, emit report
 
@@ -474,7 +440,7 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 - **`gh` not authenticated** → abort upfront in Step 2.4. PR creation would fail at end of every team otherwise.
 - **`git worktree add` fails** (uncommitted changes in main? branch already exists?) → abort with the git error; cleanup any worktrees already created in this run.
 - **A team's `/implement-and-evaluate` aborts pre-phase** (missing dep, contract empty) → its journal's final-verdict captures this; status file gets `status=aborted`. Other teams continue.
-- **Wall-clock timeout fires** → kill that team's tmux window via `tmux kill-pane`; write `status=timeout`. Worktree preserved. Other teams continue.
+- **Wall-clock timeout fires** → `wave-tick.sh` kills that team's tmux window (`tmux kill-window`) and writes `status=timeout`. Worktree preserved. Other teams continue.
 - **All teams timeout** → consolidated report shows N timeouts. Wave status = `all-failed`. User investigates each worktree.
 - **Team's claude process crashes without writing journal final-verdict** → status file shows `status=running` (driver never got to write terminal). Main treats as `aborted` after timeout fires; logs `crashed-without-status` in soft-fails.
 - **PR collision: two teams' PRs touch the same files** → not the skill's problem. Each `/implement-and-evaluate` resolves merge conflicts at its own Step 7. If the user later merges both PRs in sequence, GitHub handles the human merge of the second.
@@ -491,7 +457,7 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 - **Multiple folders match `docs/F<ID>-*/`** (e.g., `F03-video-upload-old/` lingering next to `F03-video-upload/`) → Step 1.4 aborts with the candidate list. User resolves manually.
 - **`stop.sh --clean` fails inside a stale worktree during Step 2.3 cleanup** (e.g., DB already dropped, scripts changed shape) → swallow the error; the subsequent `git worktree remove --force` is what actually frees the path. Log a soft-fail.
 - **`gh` CLI not installed** → caught by Step 2.4 `command -v gh` precheck, distinct from `gh auth status` failures.
-- **Linux host (not macOS)** → the dashboard's `date -u -j -f` BSD-syntax calls won't parse and elapsed times render as `0h00m`. Functional otherwise. Project's target is macOS per CLAUDE.md; documented limitation.
+- **Linux vs macOS host** → both are supported. Timestamp parsing goes through `iso_to_epoch` (BSD `date -j -f` with a GNU `date -d` fallback) in the dashboard and in the Step 6 tick. Pane splits use `-l <N>%`, which needs tmux ≥ 3.1. The ports pane needs `lsof` on PATH; without it that pane prints a notice and exits, and the rest of the wave is unaffected.
 - **Long wave with `max-parallel < total`** → first batch dispatches in Step 5; remaining features go to `queue.txt` and Step 6's polling tick respawns them as slots open. No single Bash call exceeds the platform timeout because each tick is short-lived.
 - **`progress-path=<relative path>`** (e.g., `progress-path=docs/prd_progress.json`) → resolved per-team relative to each team's CWD (their worktree), so each team writes to its own branch's copy — same as Regime A. Only an **absolute** `progress-path` produces shared-file semantics (Regime B). The skill does not normalize relative→absolute.
 
@@ -500,6 +466,8 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 ## BUNDLED FILES
 
 **`scripts/`** — executables copied into the wave dir at Step 3.3 and run from there:
+- `scripts/spawn-team.sh` — creates one team's three-pane tmux window and its initial status file. Called once per feature in Step 5.2 and by `wave-tick.sh` for queue respawns.
+- `scripts/wave-tick.sh` — one Step 6 polling tick: enforces the per-team timeout, respawns from `queue.txt`, prints a summary and `ALL_DONE` when the wave is finished.
 - `scripts/team-driver.sh` — bash script run in the LEFT pane (.0) of each team's tmux window. Spawns `claude /implement-and-evaluate`, writes terminal status file on exit.
 - `scripts/services-tail.sh` — bash script run in the TOP-RIGHT pane (.1) of each team's tmux window. Waits for `<worktree>/.pids/{backend,web}.log` and `tail -F`s them so the user sees server output live next to claude. Project-specific (assumes `.pids/` log paths).
 - `scripts/ports-tail.sh` — bash script run in the BOTTOM-RIGHT pane (.2). Periodically `lsof`-discovers TCP LISTEN sockets owned by processes whose CWD is inside the worktree. **Project-agnostic** — no `.env` reads, no project-specific assumptions.

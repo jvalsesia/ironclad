@@ -104,7 +104,8 @@ pr_url=""
 cycles=""
 
 # Find the most recent orchestration-*.md in the feature's docs folder.
-feature_docs="docs/${feature_id}-${feature_slug}"
+# Absolute path: the status file is read by the dashboard from another CWD.
+feature_docs="$worktree_abspath/docs/${feature_id}-${feature_slug}"
 if [ -d "$feature_docs" ]; then
     journal="$(ls -1t "$feature_docs"/orchestration-*.md 2>/dev/null | head -n1)"
 fi

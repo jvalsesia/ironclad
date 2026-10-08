@@ -29,8 +29,14 @@ max_parallel=$(get_meta max_parallel)
 team_timeout=$(get_meta team_timeout)
 selected=$(get_meta selected_features)
 
+# ISO-8601 UTC timestamp → epoch seconds. BSD date (macOS) first; GNU date
+# (Linux) rejects `-j` and falls through to `-d`.
+iso_to_epoch() {
+    date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null
+}
+
 # --- Header ---
-elapsed_s=$(( $(date -u +%s) - $(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || echo 0) ))
+elapsed_s=$(( $(date -u +%s) - $(iso_to_epoch "$started_at" || echo 0) ))
 elapsed_h=$(( elapsed_s / 3600 ))
 elapsed_m=$(( (elapsed_s % 3600) / 60 ))
 elapsed_str=$(printf "%dh%02dm" "$elapsed_h" "$elapsed_m")
@@ -102,8 +108,8 @@ for pair in "${pairs[@]}"; do
     # Elapsed.
     if [ -n "$started" ]; then
         end_ref="${finished:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-        s0=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started" +%s 2>/dev/null || echo 0)
-        s1=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$end_ref" +%s 2>/dev/null || echo 0)
+        s0=$(iso_to_epoch "$started" || echo 0)
+        s1=$(iso_to_epoch "$end_ref" || echo 0)
         diff=$(( s1 - s0 ))
         h=$(( diff / 3600 )); mn=$(( (diff % 3600) / 60 ))
         elapsed_team=$(printf "%dh%02dm" "$h" "$mn")
