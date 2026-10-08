@@ -1,0 +1,10 @@
+# Tests may unwrap; production code may not (see [workspace.lints] in Cargo.toml).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Rule 2: the environment is read in exactly one place.
+disallowed-methods = [
+  { path = "std::env::var", reason = "read configuration only in crates/app/src/config.rs" },
+  { path = "std::env::var_os", reason = "read configuration only in crates/app/src/config.rs" },
+  { path = "std::env::vars", reason = "read configuration only in crates/app/src/config.rs" },
+]

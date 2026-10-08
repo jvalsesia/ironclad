@@ -1,7 +1,7 @@
 ---
 name: clean-arch
-version: 1.0.0
-description: Use when creating, modifying, moving, or renaming any backend artifact (entity, value object, use case, repository, query, handler, route, DTO, error, mapper, gateway, middleware, composition root); when the user asks for a new endpoint, feature, CRUD, or backend change; when the user mentions clean architecture, DDD, domain, layer, infra, use case, aggregate; or whenever a project's CLAUDE.md asks to use this skill.
+version: 1.1.0
+description: Use when creating, modifying, moving, or renaming any backend artifact (entity, value object, use case, repository, query, handler, route, DTO, error, mapper, gateway, middleware, composition root) in a TypeScript or Rust backend; when the user asks for a new endpoint, feature, CRUD, or backend change; when the user mentions clean architecture, DDD, domain, layer, infra, use case, aggregate, Cargo workspace layering, axum or sqlx structure; or whenever a project's CLAUDE.md asks to use this skill.
 ---
 
 # Clean Architecture + tactical DDD
@@ -9,6 +9,8 @@ description: Use when creating, modifying, moving, or renaming any backend artif
 Prescriptive philosophy and folder organization for backend projects. Codifies one way to do things so the codebase stays consistent. Read this file first; load `references/` for depth on a specific topic.
 
 If the project follows this architecture (`src/domain/`, `src/usecase/`, `src/infra/`, or a CLAUDE.md referencing this skill), follow the rules strictly.
+
+**Two languages, one philosophy.** The rules below are language-independent. The examples in this file are TypeScript. For a **Rust** backend (a `Cargo.toml` with `crates/domain` or `src/domain`), read this file for the rules, then go to [Rust backends](#rust-backends) for the layout, shapes and gates, and to `references/rust/` for depth.
 
 ---
 
@@ -384,7 +386,7 @@ You can run the full set with the skill helper:
 
 `node .claude/skills/clean-arch/scripts/run-gates.mjs`
 
-From a monorepo root, the helper auto-detects `apps/backend`; otherwise run it from the backend root or pass `--cwd=<backend-path>`.
+From a monorepo root, the helper auto-detects `apps/backend` or `backend`; otherwise run it from the backend root or pass `--cwd=<backend-path>`. In a Rust project it runs the 3 Rust gates instead — see [Rust backends](#rust-backends).
 
 1. `npx tsc --noEmit -p tsconfig.json` — TypeScript strict, zero errors.
 2. `npx eslint . --max-warnings=0` — zero warnings (skill ships with `.eslintrc.cjs`).
@@ -396,6 +398,136 @@ From a monorepo root, the helper auto-detects `apps/backend`; otherwise run it f
 Husky enforces gates 1–2 on `pre-commit` and gates 3–6 on `pre-push`.
 
 **`git commit --no-verify` and `git push --no-verify` are forbidden.** If a gate fails, fix the code. If you genuinely believe the gate itself is wrong, stop and ask the user — do not bypass.
+
+---
+
+## Rust backends
+
+Same three layers, same 19 rules. What changes is the mechanics. Default stack: **axum + tokio, sqlx + PostgreSQL, thiserror in libraries, anyhow only in the binary.** A complete, compiling example is in `templates/initial-project-rust/`.
+
+### Layout
+
+```
+backend/
+  Cargo.toml                     # [workspace] + shared versions + shared lints
+  clippy.toml
+  migrations/
+  crates/
+    domain/src/                  # no workspace deps, no I/O crates
+      shared/                    # whitelist: id, errors, pagination, unit_of_work, event
+      user/                      # mod.rs, user_entity.rs, email_vo.rs,
+                                 # user_repository.rs, user_queries.rs, errors.rs
+    usecase/src/                 # depends on domain only
+      user/                      # create_user.rs, list_users.rs, suspend_user.rs
+    infra/src/                   # depends on domain + usecase
+      http/                      # router.rs, error.rs, extract.rs, middleware/auth.rs
+        user/                    # create_user_handler.rs, …, user_routes.rs
+      repository/user/           # pg_user_repository.rs, in_memory_user_repository.rs, user_row.rs
+      queries/user/              # pg_user_queries.rs, in_memory_user_queries.rs
+      gateway/  persistence/
+    app/src/                     # main.rs (composition root), config.rs (only env reader)
+```
+
+One crate per layer is the default because **Cargo enforces the dependency rule**: `domain`'s manifest does not list `infra`, so importing it does not compile. Small projects may use a single crate with the same tree under `src/` (`src/domain`, `src/usecase`, `src/infra`, `src/config.rs`, `src/main.rs`); the architecture check then enforces the rule instead. No third layout.
+
+### What changes from TypeScript
+
+| Topic                 | TypeScript                                   | Rust                                                                 |
+|-----------------------|----------------------------------------------|----------------------------------------------------------------------|
+| Dependency rule       | dependency-cruiser                           | `Cargo.toml` per crate (the compiler)                                |
+| File names            | `kebab-case` + dotted suffix (`user.entity.ts`) | `snake_case` + underscore suffix (`user_entity.rs`)               |
+| Entity                | private constructor, `static create/restore` | private fields, `pub fn create` / `restore`, no `pub` field, no `set_*` |
+| Value object          | private constructor, `equals`                | private field, `create -> Result`, `from_trusted`, `PartialEq`       |
+| ID                    | `UserId extends Id`                          | `pub type UserId = Id<User>` (phantom-typed)                         |
+| Errors                | `throw` an `AppError` subclass               | `Result<_, AppError>`; per-feature `enum` + `From<FeatureError> for AppError`; no panics |
+| Use case + DTO        | `x.usecase.ts` + `x.dto.ts`                  | one file: `XInput`, `XOutput`, `XUseCase`                            |
+| Dependency injection  | constructor params typed by interface        | `Arc<dyn Trait>` fields set in `new`                                 |
+| Mapper                | `<feature>.mapper.ts`                        | `<feature>_row.rs`: `impl From<FeatureRow> for Feature`               |
+| Handler               | class with `handle`, zod schema, no `try/catch` | one `pub async fn`, serde body struct, `?` only — no `match`/`map_err` on errors |
+| Entity serialization  | `toJSON()` throws                            | entities and VOs never derive `Serialize`/`Deserialize`              |
+| Barrel files          | forbidden                                    | `mod.rs`/`lib.rs` are facades: declarations + named re-exports, no logic, no globs |
+| Env                   | `src/config/env.ts`                          | `crates/app/src/config.rs`, enforced by clippy `disallowed-methods`  |
+| Tests                 | `*.spec.ts` next to the file                 | `#[cfg(test)] mod tests` as the last item of the file                |
+
+### Canonical shapes
+
+```rust
+// domain/src/user/user_entity.rs — rich, closed, not serializable
+pub type UserId = Id<User>;
+
+#[derive(Debug, Clone)]
+pub struct User { id: UserId, email: Email, is_suspended: bool, created_at: DateTime<Utc> }
+
+impl User {
+    pub fn create(email: Email) -> Self { /* generates the id, applies creation rules */ }
+    pub fn restore(id: UserId, email: Email, is_suspended: bool, created_at: DateTime<Utc>) -> Self { /* no rules */ }
+    pub fn suspend(&mut self) -> Result<(), UserError> { /* the invariant lives here */ }
+    pub const fn id(&self) -> UserId { self.id }
+}
+```
+
+```rust
+// domain/src/user/user_repository.rs — port
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    async fn find_by_id(&self, id: UserId) -> Result<Option<User>, AppError>;
+    async fn find_by_email(&self, email: &Email) -> Result<Option<User>, AppError>;  // uniqueness check only
+    async fn save(&self, user: &User) -> Result<(), AppError>;   // upsert
+    async fn delete(&self, id: UserId) -> Result<(), AppError>;
+}
+```
+
+```rust
+// usecase/src/user/create_user.rs — Input + Output + one execute
+pub struct CreateUserUseCase { user_repo: Arc<dyn UserRepository> }
+
+impl CreateUserUseCase {
+    pub fn new(user_repo: Arc<dyn UserRepository>) -> Self { Self { user_repo } }
+
+    pub async fn execute(&self, input: CreateUserInput) -> Result<CreateUserOutput, AppError> {
+        let email = Email::create(&input.email)?;
+        if self.user_repo.find_by_email(&email).await?.is_some() {
+            return Err(UserError::EmailTaken(email.as_str().to_owned()).into());
+        }
+        let user = User::create(email);
+        self.user_repo.save(&user).await?;
+        Ok(CreateUserOutput::from(&user))
+    }
+}
+```
+
+```rust
+// infra/src/http/user/create_user_handler.rs — extract, build Input, execute, return
+pub async fn create_user_handler(
+    State(create_user): State<Arc<CreateUserUseCase>>,
+    ApiJson(body): ApiJson<CreateUserBody>,
+) -> Result<(StatusCode, Json<CreateUserOutput>), HttpError> {
+    let output = create_user.execute(CreateUserInput { email: body.email }).await?;
+    Ok((StatusCode::CREATED, Json(output)))
+}
+```
+
+### Self-audit gates (Rust)
+
+```bash
+node .claude/skills/clean-arch/scripts/run-gates.mjs      # detects Rust and runs all three
+```
+
+1. `cargo fmt --all -- --check` — formatting.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — compiles everything; denies `unwrap`, `expect`, `todo!`, `dbg!` outside tests, `unsafe`, and `std::env::var` outside `config.rs`.
+3. `node .claude/skills/clean-arch/scripts/check-architecture-rust.mjs` — crate dependencies, I/O crates in `domain`/`usecase`, naming per location, use case / entity / VO / handler shapes, in-memory fakes, `shared` whitelist, `mod.rs` facades.
+
+Three gates, not six: Cargo already rejects cross-layer and circular crate dependencies, and clippy includes the type check. Rule 19 applies unchanged — and adding `#[allow(..)]` to quiet a gate counts as bypassing it.
+
+### Rust reference index
+
+- **`rust/workspace-layout.md`** — both layouts, `Cargo.toml` per crate, the naming table, `mod.rs` facades, where tests live, **the 19 rules restated for Rust**, where the layout comes from.
+- **`rust/domain-modeling.md`** — entities, value objects, `Id<T>`, `AppError` / `ErrorKind`, per-feature error enums, what `domain` may depend on.
+- **`rust/use-cases-and-ports.md`** — use case shape, DTOs, why `Arc<dyn Trait>`, repository / queries / gateway traits, authorization, pagination, tests, multiple writes.
+- **`rust/infra-axum-sqlx.md`** — handlers, extractors, the central `HttpError` mapper, routes, authentication, sqlx repositories and row mapping, in-memory fakes, composition root, config.
+- **`rust/anti-patterns.md`** — Rust-specific violations and which gate catches each. Load it before any non-trivial structural change in a Rust project.
+
+The topic references below (`domain-events.md`, `cross-feature-use-cases.md`, `solid-principles.md`, …) are written with TypeScript examples, but their reasoning applies to Rust as is.
 
 ---
 

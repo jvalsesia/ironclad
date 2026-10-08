@@ -80,3 +80,26 @@ The `.cjs` files are templates. Adjust them when:
 - The project has a non-standard root path — update the `from`/`to` regexes in `.dependency-cruiser.cjs`.
 
 When modifying these configs, update `references/anti-patterns.md` and `SKILL.md` accordingly. The configs and the skill must say the same thing.
+
+---
+
+## Rust projects
+
+Rust backends need none of the files above. Their lint configuration is two files, both shipped in `templates/initial-project-rust/`:
+
+| File                               | Tool   | Purpose                                                                 |
+|------------------------------------|--------|-------------------------------------------------------------------------|
+| `Cargo.toml` → `[workspace.lints]` | rustc, clippy | `unsafe_code = "forbid"`; `unwrap_used`, `expect_used`, `todo`, `dbg_macro` denied. |
+| `clippy.toml`                      | clippy | Allows `unwrap`/`expect` in tests; disallows `std::env::var*` outside `config.rs`. |
+
+Copy both into an existing workspace, add `[lints] workspace = true` to every crate, and run the 3 Rust gates:
+
+```bash
+cargo fmt --all -- --check                                               # Gate 1 — format
+cargo clippy --workspace --all-targets -- -D warnings                    # Gate 2 — compile + lint
+node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs     # Gate 3 — structural
+```
+
+`node ~/.claude/skills/clean-arch/scripts/run-gates.mjs` detects a Rust project (a `Cargo.toml` next to `crates/domain` or `src/domain`) and runs these instead of the TypeScript gates. No git hooks are shipped for Rust.
+
+The cross-layer check that `dependency-cruiser` performs for TypeScript is done by Cargo itself in the workspace layout, and by the architecture check (`layer-import`) in the single-crate layout. See `references/rust/workspace-layout.md`.

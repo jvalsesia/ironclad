@@ -1,0 +1,20 @@
+[package]
+name = "infra"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+domain.workspace = true
+usecase.workspace = true
+
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+uuid.workspace = true

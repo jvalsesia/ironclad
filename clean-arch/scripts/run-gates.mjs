@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+const SKILL_SCRIPTS = dirname(fileURLToPath(import.meta.url));
 
-const GATES = [
+const TYPESCRIPT_GATES = [
   ["TypeScript", NPX, ["tsc", "--noEmit", "-p", "tsconfig.json"]],
   ["ESLint", NPX, ["eslint", ".", "--max-warnings=0"]],
   ["Dependency Cruiser", NPX, ["depcruise", "src", "--config", ".dependency-cruiser.cjs"]],
@@ -14,21 +16,28 @@ const GATES = [
   ["Knip", NPX, ["knip"]],
 ];
 
+const RUST_GATES = [
+  ["Rustfmt", "cargo", ["fmt", "--all", "--", "--check"]],
+  ["Clippy", "cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]],
+  ["Architecture", "node", [resolve(SKILL_SCRIPTS, "check-architecture-rust.mjs")]],
+];
+
 function resolveTargetDir() {
   const explicit = process.argv.find((arg) => arg.startsWith("--cwd="));
   if (explicit) return resolve(explicit.slice("--cwd=".length));
 
   const cwd = process.cwd();
-  if (looksLikeCleanArchProject(cwd)) return cwd;
-
-  const backend = resolve(cwd, "apps/backend");
-  if (looksLikeCleanArchProject(backend)) return backend;
-
-  return cwd;
+  const candidates = [cwd, resolve(cwd, "apps/backend"), resolve(cwd, "backend")];
+  return candidates.find((dir) => looksLikeCleanArchProject(dir) || looksLikeRustProject(dir)) ?? cwd;
 }
 
 function looksLikeCleanArchProject(dir) {
   return existsSync(resolve(dir, "src")) && existsSync(resolve(dir, "tsconfig.json"));
+}
+
+function looksLikeRustProject(dir) {
+  if (!existsSync(resolve(dir, "Cargo.toml"))) return false;
+  return existsSync(resolve(dir, "crates/domain")) || existsSync(resolve(dir, "src/domain"));
 }
 
 function commandLine(command, args) {
@@ -103,5 +112,6 @@ function summarize(results) {
 }
 
 const targetDir = resolveTargetDir();
+const gates = looksLikeRustProject(targetDir) ? RUST_GATES : TYPESCRIPT_GATES;
 console.log(`[clean-arch:gates] cwd: ${targetDir}`);
-process.exitCode = summarize(GATES.map((gate) => runGate(targetDir, gate)));
+process.exitCode = summarize(gates.map((gate) => runGate(targetDir, gate)));
