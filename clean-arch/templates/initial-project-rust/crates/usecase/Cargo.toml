@@ -1,0 +1,20 @@
+[package]
+name = "usecase"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# `domain` is the only workspace crate allowed here.
+[dependencies]
+domain.workspace = true
+
+chrono.workspace = true
+serde.workspace = true
+
+# Tests run against the in-memory fakes that live in `infra`.
+[dev-dependencies]
+infra.workspace = true
+tokio.workspace = true
