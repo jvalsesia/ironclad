@@ -1,6 +1,8 @@
 # ironclad
 
-Claude Code skills for taking a product from an idea to merged pull requests: write the PRD, spec each feature, implement it, verify it against a behavior contract, and fix what fails. A separate skill keeps Rust backends on a strict Clean Architecture layout.
+Claude Code skills for building Rust backends on a strict Clean Architecture. At the core is `clean-arch`: one Cargo workspace layout (`domain` ← `usecase` ← `infra` ← `app`, dependencies pointing inward only), 19 rules with canonical shapes for axum + sqlx + PostgreSQL, and gates (cargo fmt, clippy, an architecture checker) that enforce them mechanically, so the layering holds as the codebase grows instead of eroding one shortcut at a time.
+
+Around it sits a pipeline that takes a product from an idea to merged pull requests: write the PRD, spec each feature, implement it, verify it against a behavior contract, and fix what fails. The pipeline itself is stack-agnostic; on a Rust backend, `clean-arch` keeps every feature it implements inside that architecture.
 
 ## The pipeline
 
