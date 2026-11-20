@@ -19,6 +19,7 @@ node clean-arch/scripts/run-gates.mjs --cwd=clean-arch/templates/initial-project
 # installer
 ./install.sh --dry-run          # preview; --list shows skills, deps and required tools
 ./install.sh                    # symlink every skill into ~/.claude/skills
+./uninstall.sh                  # wrapper for install.sh --uninstall (same options)
 ```
 
 With the default symlink install, edits here go live in the next Claude Code session. There is no build or lint step for the repo itself.

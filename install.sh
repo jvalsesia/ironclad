@@ -178,11 +178,33 @@ fi
 : "${dest:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills}"
 : "${mode:=link}"
 
-# What sits at $dest/<skill>: none | ours-link | ours-copy | foreign
+# Root commit of this checkout. Another clone with the same root is the same
+# project under a different path or name (e.g. before the mba-skills rename).
+src_root="$(git -C "$src" rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -n 1 || true)"
+
+same_project() {
+    [ -n "$src_root" ] && [ -f "$1/install.sh" ] || return 1
+    [ "$(git -C "$1" rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -n 1)" = "$src_root" ]
+}
+
+# What sits at $dest/<skill>: none | ours-link | stale-link | ours-copy | foreign
+#   stale-link: a link into another checkout of this repo, or a dangling link
+#   whose target is named after the skill (an install whose checkout is gone)
 state_of() {
-    local target="$dest/$1"
+    local target="$dest/$1" resolved
     if [ -L "$target" ]; then
-        if [ "$(cd "$target" 2>/dev/null && pwd -P)" = "$src/$1" ]; then echo ours-link; else echo foreign; fi
+        if [ ! -e "$target" ]; then
+            case "$(readlink "$target")" in */"$1"|*/"$1"/) echo stale-link ;; *) echo foreign ;; esac
+            return 0
+        fi
+        resolved="$(cd "$target" 2>/dev/null && pwd -P)"
+        if [ "$resolved" = "$src/$1" ]; then
+            echo ours-link
+        elif [ "$(basename "$resolved")" = "$1" ] && same_project "$(dirname "$resolved")"; then
+            echo stale-link
+        else
+            echo foreign
+        fi
     elif [ -e "$target" ]; then
         if [ -f "$target/$MARKER" ]; then echo ours-copy; else echo foreign; fi
     else
@@ -215,6 +237,9 @@ install_skill() {
             fi ;;
     esac
 
+    if [ "$state" = "stale-link" ]; then
+        say "$name: replacing link to $(readlink "$target") (another or missing checkout)"
+    fi
     if [ "$state" = "none" ]; then verb="installed"; else verb="replaced"; fi
     [ "$state" = "none" ] || remove_target "$target"
     if [ "$mode" = "link" ]; then
@@ -246,8 +271,10 @@ uninstall_skill() {
                 return 0
             fi ;;
     esac
+    local note=""
+    if [ "$state" = "stale-link" ]; then note=" (was a link to $(readlink "$target"))"; fi
     remove_target "$target"
-    report removed "$name"
+    report removed "$name$note"
 }
 
 # --- go ---

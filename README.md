@@ -56,12 +56,14 @@ This symlinks every skill into `~/.claude/skills`, so a later `git pull` updates
 ./install.sh --dry-run              # show what would happen
 ./install.sh --list                 # available skills and what each needs
 ./install.sh --uninstall            # remove what the installer put there
+./uninstall.sh                      # same as --uninstall; takes the same options
 ```
 
 Things to know:
 
 - **Dependencies are followed.** Asking for `implement-and-evaluate-tmux` also installs `implement-and-evaluate`, `implement-feature`, `evaluator` and `fix-runner`.
 - **Existing skills are left alone.** A skill of the same name that the installer did not put there is skipped and the script exits 1. `--force` replaces it.
+- **Other clones count as ours.** A link into another checkout of this repo (one sharing its root commit, such as a clone made before the `mba-skills` → `ironclad` rename), or a dangling link left by a deleted clone, is replaced on install and removed on uninstall without `--force`.
 - **Copies are overwritten on re-run.** Edits made inside a copied skill are lost the next time the installer refreshes it.
 - **`--project` copies by default.** A symlink committed to a project would point at a path that exists only on your machine. `--link` overrides this.
 - **`clean-arch` expects `~/.claude/skills`.** Its templates and docs reference `~/.claude/skills/clean-arch/`, so those commands only resolve when it is installed there.
@@ -146,6 +148,7 @@ docs/
 clean-arch/
   templates/      the Rust starter project and the CLAUDE.md template for projects using the skill
 install.sh
+uninstall.sh      shorthand for install.sh --uninstall
 ```
 
 ## Development
