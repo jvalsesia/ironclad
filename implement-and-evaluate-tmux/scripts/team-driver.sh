@@ -4,7 +4,7 @@
 # Responsibilities:
 #   1. Initialize the team's status file (status=running, phase=spawning).
 #   2. cd into the team's worktree.
-#   3. exec `claude /implement-and-evaluate F<ID> <tail>` in the foreground (this window).
+#   3. exec `claude /ironclad:implement-and-evaluate F<ID> <tail>` in the foreground (this window).
 #   4. On claude exit (any reason), parse the team's journal final-verdict block
 #      and write the terminal status file.
 #   5. sleep forever to keep the tmux window alive for inspection.
@@ -13,7 +13,7 @@
 #   $1  feature_id      e.g. F03
 #   $2  feature_slug    e.g. video-upload
 #   $3  wave_dir        e.g. .claude/worktrees/.wave-2026-05-02T18-02-13Z
-#   $4  tail            forwarded overrides for /implement-and-evaluate (may be empty)
+#   $4  tail            forwarded overrides for /ironclad:implement-and-evaluate (may be empty)
 #
 # Status file: $wave_dir/status/$feature_id.status
 # One field per line, key=value. Atomic write (write-to-tmp + rename).
@@ -53,7 +53,7 @@ write_status \
     "phase=spawning" \
     "status=running"
 
-# --- cd into worktree and run /implement-and-evaluate ---
+# --- cd into worktree and run /ironclad:implement-and-evaluate ---
 if [ ! -d "$worktree_abspath" ]; then
     write_status \
         "feature_id=$feature_id" \
@@ -80,7 +80,7 @@ write_status \
     "phase=running" \
     "status=running"
 
-# Construct the /implement-and-evaluate input.
+# Construct the /ironclad:implement-and-evaluate input.
 ie_input="$feature_id"
 if [ -n "$tail_override" ]; then
     ie_input="$ie_input $tail_override"
@@ -92,7 +92,7 @@ fi
 # Note: this script never enables `set -e` (only `-uo pipefail` at the top), so
 # downstream best-effort parsing (grep with no match, awk no match) is allowed
 # to "fail" without aborting the script.
-claude --dangerously-skip-permissions "/implement-and-evaluate $ie_input"
+claude --dangerously-skip-permissions "/ironclad:implement-and-evaluate $ie_input"
 claude_exit=$?
 
 # --- Parse the team's journal final-verdict block ---

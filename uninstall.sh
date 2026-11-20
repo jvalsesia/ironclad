@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# uninstall.sh — removes ironclad skills from a Claude Code skills directory.
+# uninstall.sh — removes the ironclad plugin from Claude Code.
 #
-#   ./uninstall.sh                        every ironclad skill from ~/.claude/skills
-#   ./uninstall.sh clean-arch evaluator   just these (dependencies are kept)
-#   ./uninstall.sh --project              from ./.claude/skills of the current project
-#   ./uninstall.sh --dry-run              show what would be removed
+#   ./uninstall.sh                     from your user scope
+#   ./uninstall.sh --scope project     from the project in the current directory
+#   ./uninstall.sh --keep-marketplace  keep the marketplace registered
+#   ./uninstall.sh --dry-run           show what would be removed
 #
-# Shorthand for `install.sh --uninstall`; takes the same options (--dest, --project,
-# --force, --dry-run). Only skills installed from a checkout of this repo are
-# removed: links into this or another clone of it (e.g. an old mba-skills
-# checkout), dangling links left by a deleted clone, and copies carrying the
-# install marker. Anything else under the same name needs --force.
+# Shorthand for `install.sh --uninstall`; takes the same options. It also removes
+# skills the pre-plugin installer linked or copied into a skills directory (links
+# into a clone of this repo, dangling links left by a deleted clone, copies with
+# the install marker). Anything else under the same name is left alone.
 
 set -euo pipefail
 

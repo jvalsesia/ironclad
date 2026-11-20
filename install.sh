@@ -1,50 +1,45 @@
 #!/usr/bin/env bash
-# install.sh — installs the ironclad collection into a Claude Code skills directory.
+# install.sh — installs ironclad as a Claude Code plugin; its skills become
+# /ironclad:<skill> (e.g. /ironclad:prd-writer).
 #
-#   ./install.sh                        every skill, symlinked into ~/.claude/skills
-#   ./install.sh clean-arch evaluator   just these, plus the skills they invoke
-#   ./install.sh --project              copied into ./.claude/skills of the current project
-#   ./install.sh --uninstall            remove what this installer put there
+#   ./install.sh                   for you, loaded in place from this checkout
+#                                  (edits and `git pull` apply next session)
+#   ./install.sh --github          for you, from GitHub (update with `claude plugin update`)
+#   ./install.sh --scope project   for the project in the current directory, via
+#                                  its .claude/settings.json (always from GitHub)
+#   ./install.sh --uninstall       remove it again (same as ./uninstall.sh)
 #
-# Run outside a checkout (piped from curl, say) it clones the repo first and
-# installs from that clone. `--help` lists every option.
-#
-# Ownership: a symlink that points back into this checkout, or a copy carrying
-# the marker file, counts as installed from here. Anything else under the same
-# name is left alone unless --force is given.
+# Either way it first removes skills that the pre-plugin installer linked or
+# copied into a skills directory: left there, every skill would load twice.
+# Without a checkout, install with:
+#   claude plugin marketplace add jvalsesia/ironclad && claude plugin install ironclad@ironclad
 
 set -euo pipefail
 
-REPO_URL="${IRONCLAD_REPO:-https://github.com/jvalsesia/ironclad.git}"
-CLONE_DIR="${IRONCLAD_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ironclad}"
-MARKER=".ironclad-install"
+PLUGIN="ironclad"
+MARKETPLACE="ironclad"
+GITHUB_REPO="${IRONCLAD_REPO:-jvalsesia/ironclad}"
+MARKER=".ironclad-install"   # left in copies by the pre-plugin installer
 
 usage() {
     cat <<EOF
-Usage: install.sh [options] [skill...]
+Usage: install.sh [options]
 
-With no skill names, every skill in the repo is installed. Naming skills
-installs just those, plus the skills they invoke at runtime.
+Installs the ironclad plugin (all its skills) with the \`claude\` CLI.
 
 Options:
-  --link           symlink each skill to this checkout, so \`git pull\` updates it
-                   (default for ~/.claude/skills)
-  --copy           copy each skill instead; re-run to refresh the copies
-                   (default with --project)
-  --project[=DIR]  install into DIR/.claude/skills instead of ~/.claude/skills;
-                   DIR defaults to the current directory
-  --dest DIR       install into an arbitrary skills directory
-  --uninstall      remove skills this installer put there
-  --force          replace (with --uninstall: remove) skills it did not install
-  --dry-run        show what would happen, change nothing
-  --list           list the available skills and exit
-  -h, --help       show this help
+  --scope SCOPE        user (default), project or local. project and local apply to
+                       the project in the current directory; project is written to
+                       its committed .claude/settings.json and always uses GitHub
+  --github             install from GitHub ($GITHUB_REPO) instead of this checkout
+  --uninstall          remove the plugin and any pre-plugin skill installs
+  --keep-marketplace   with --uninstall: keep the marketplace registered
+  --dry-run            show what would happen, change nothing
+  -h, --help           show this help
 
 Environment:
-  IRONCLAD_REPO    repo to clone when run outside a checkout
-                   (default: $REPO_URL)
-  IRONCLAD_HOME    where that clone lives
-                   (default: $CLONE_DIR)
+  IRONCLAD_REPO        GitHub repo used by --github and --scope project
+                       (default: $GITHUB_REPO)
 EOF
 }
 
@@ -53,133 +48,65 @@ warn() { echo "[install] WARN: $*" >&2; }
 say() { echo "[install] $*"; }
 report() { printf '  %-10s %s\n' "$1" "$2"; }
 
-has_word() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
-has_skills() { ls "$1"/*/SKILL.md >/dev/null 2>&1; }
-
-# Skills a skill invokes at runtime; installing it without them leaves it broken.
-deps_of() {
-    case "$1" in
-        implement-and-evaluate)      echo "implement-feature evaluator fix-runner" ;;
-        implement-and-evaluate-tmux) echo "implement-and-evaluate" ;;
-    esac
-}
-
 # Commands a skill shells out to.
 tools_of() {
     case "$1" in
         clean-arch)                  echo "node cargo" ;;
         implement-and-evaluate)      echo "git gh" ;;
-        implement-and-evaluate-tmux) echo "tmux git claude" ;;
+        implement-and-evaluate-tmux) echo "tmux git" ;;
     esac
 }
 
 # --- arguments ---
-mode=""
-dest=""
-project=0
-project_dir=""
+scope="user"
+github=0
 action="install"
-force=0
+keep_marketplace=0
 dry_run=0
-requested=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --link)      mode="link" ;;
-        --copy)      mode="copy" ;;
-        --project)   project=1; project_dir="$PWD" ;;
-        --project=*) project=1; project_dir="${1#--project=}" ;;
-        --dest)      dest="${2:?--dest needs a directory}"; shift ;;
-        --dest=*)    dest="${1#--dest=}" ;;
-        --uninstall) action="uninstall" ;;
-        --list)      action="list" ;;
-        --force)     force=1 ;;
-        --dry-run)   dry_run=1 ;;
-        -h|--help)   usage; exit 0 ;;
-        -*)          die "unknown option: $1 (see --help)" ;;
-        *)           requested="$requested $1" ;;
+        --scope)            scope="${2:?--scope needs user, project or local}"; shift ;;
+        --scope=*)          scope="${1#--scope=}" ;;
+        --github)           github=1 ;;
+        --uninstall)        action="uninstall" ;;
+        --keep-marketplace) keep_marketplace=1 ;;
+        --dry-run)          dry_run=1 ;;
+        -h|--help)          usage; exit 0 ;;
+        -*)                 die "unknown option: $1 (see --help)" ;;
+        *)                  die "the plugin installs every skill together; naming skills ($1) is no longer supported" ;;
     esac
     shift
 done
 
-run() { if [ "$dry_run" != 1 ]; then "$@"; fi; }
+case "$scope" in user|project|local) ;; *) die "--scope must be user, project or local, not '$scope'" ;; esac
 
-# --- locate the skills: next to this script, else a clone we manage ---
-src=""
-script_path="${BASH_SOURCE[0]:-}"
-if [ -n "$script_path" ] && [ -f "$script_path" ]; then
-    src="$(cd "$(dirname "$script_path")" && pwd -P)"
-fi
-
-if [ -z "$src" ] || ! has_skills "$src"; then
-    src="$CLONE_DIR"
-    if [ "$action" = "install" ]; then
-        command -v git >/dev/null 2>&1 || die "git is needed to fetch $REPO_URL"
-        if [ -d "$src/.git" ]; then
-            say "updating $src"
-            run git -C "$src" pull --ff-only --quiet
-        else
-            say "cloning $REPO_URL into $src"
-            run git clone --quiet --depth 1 "$REPO_URL" "$src"
-        fi
-    fi
-    if ! has_skills "$src"; then
-        if [ "$dry_run" = 1 ]; then say "dry run: nothing cloned, so nothing further to show"; exit 0; fi
-        die "no skills found at $src"
-    fi
-    src="$(cd "$src" && pwd -P)"
-fi
-
-available=""
-for skill_md in "$src"/*/SKILL.md; do
-    available="$available $(basename "$(dirname "$skill_md")")"
-done
-
-if [ "$action" = "list" ]; then
-    for name in $available; do
-        needs="$(deps_of "$name")"
-        if [ -n "$needs" ]; then echo "$name (needs: $needs)"; else echo "$name"; fi
-    done
-    exit 0
-fi
-
-# --- which skills ---
-selected=""
-add_skill() {
-    local name="$1" needed_by="${2:-}" dep
-    has_word "$available" "$name" || die "unknown skill: $name (available:$available)"
-    if has_word "$selected" "$name"; then return 0; fi
-    selected="$selected $name"
-    if [ -n "$needed_by" ]; then say "adding $name (needed by $needed_by)"; fi
-    # Uninstall removes exactly what was named: a dependency may serve other skills.
-    if [ "$action" != "install" ]; then return 0; fi
-    for dep in $(deps_of "$name"); do add_skill "$dep" "$name"; done
+run() {
+    if [ "$dry_run" = 1 ]; then echo "  would run: $*"; else "$@"; fi
 }
 
-if [ -z "$requested" ]; then
-    selected="$available"
+# --- this checkout ---
+src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+[ -f "$src/.claude-plugin/marketplace.json" ] || die "no plugin found next to this script; without a checkout run: claude plugin marketplace add $GITHUB_REPO && claude plugin install $PLUGIN@$MARKETPLACE"
+command -v claude >/dev/null 2>&1 || die "the \`claude\` CLI is not on PATH"
+
+skills=""
+for skill_md in "$src"/*/SKILL.md; do
+    skills="$skills $(basename "$(dirname "$skill_md")")"
+done
+
+if [ "$scope" = "user" ]; then
+    skills_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
 else
-    for name in $requested; do add_skill "$name"; done
+    [ "$(pwd -P)" != "$src" ] || die "that is the ironclad repo itself; run --scope $scope from your project's directory"
+    skills_dir="$(pwd -P)/.claude/skills"
 fi
+# A local path exists only on this machine, so a committed project setting must name GitHub.
+if [ "$scope" = "project" ]; then github=1; fi
 
-# --- where to ---
-if [ "$project" = 1 ]; then
-    if [ -n "$dest" ]; then die "--project and --dest cannot be combined"; fi
-    [ -d "$project_dir" ] || die "project directory not found: $project_dir"
-    project_dir="$(cd "$project_dir" && pwd -P)"
-    if [ "$project_dir" = "$src" ]; then
-        die "that is the skills repo itself; run this from your project or pass --project=DIR"
-    fi
-    dest="$project_dir/.claude/skills"
-    # A symlink into this checkout is an absolute path: committed to the project,
-    # it would dangle on every other machine.
-    : "${mode:=copy}"
-fi
-: "${dest:=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills}"
-: "${mode:=link}"
-
-# Root commit of this checkout. Another clone with the same root is the same
-# project under a different path or name (e.g. before the mba-skills rename).
+# --- pre-plugin installs ---
+# Root commit of this checkout: another clone sharing it is the same project
+# under another path or name (e.g. a checkout from before the mba-skills rename).
 src_root="$(git -C "$src" rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -n 1 || true)"
 
 same_project() {
@@ -187,119 +114,109 @@ same_project() {
     [ "$(git -C "$1" rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -n 1)" = "$src_root" ]
 }
 
-# What sits at $dest/<skill>: none | ours-link | stale-link | ours-copy | foreign
-#   stale-link: a link into another checkout of this repo, or a dangling link
-#   whose target is named after the skill (an install whose checkout is gone)
-state_of() {
-    local target="$dest/$1" resolved
+# What sits at $skills_dir/<skill>: none | legacy | foreign
+#   legacy: a link into a clone of this repo, a dangling link named after the
+#   skill (its clone is gone), or a copy carrying the old installer's marker.
+legacy_state() {
+    local target="$skills_dir/$1" resolved
     if [ -L "$target" ]; then
         if [ ! -e "$target" ]; then
-            case "$(readlink "$target")" in */"$1"|*/"$1"/) echo stale-link ;; *) echo foreign ;; esac
+            case "$(readlink "$target")" in */"$1"|*/"$1"/) echo legacy ;; *) echo foreign ;; esac
             return 0
         fi
         resolved="$(cd "$target" 2>/dev/null && pwd -P)"
-        if [ "$resolved" = "$src/$1" ]; then
-            echo ours-link
-        elif [ "$(basename "$resolved")" = "$1" ] && same_project "$(dirname "$resolved")"; then
-            echo stale-link
+        if [ "$(basename "$resolved")" = "$1" ] && same_project "$(dirname "$resolved")"; then
+            echo legacy
         else
             echo foreign
         fi
     elif [ -e "$target" ]; then
-        if [ -f "$target/$MARKER" ]; then echo ours-copy; else echo foreign; fi
+        if [ -f "$target/$MARKER" ]; then echo legacy; else echo foreign; fi
     else
         echo none
     fi
 }
 
-remove_target() {
-    if [ -L "$1" ]; then run rm -f "$1"; else run rm -rf "$1"; fi
+remove_legacy() {
+    local name target what
+    [ -d "$skills_dir" ] || return 0
+    for name in $skills; do
+        target="$skills_dir/$name"
+        case "$(legacy_state "$name")" in
+            legacy)
+                if [ -L "$target" ]; then
+                    what="link to $(readlink "$target")"
+                    run rm -f "$target"
+                else
+                    what="copy"
+                    run rm -rf "$target"
+                fi
+                report removed "$target (pre-plugin $what)" ;;
+            foreign)
+                warn "$target is not from ironclad and was left alone; /$name may now be ambiguous, so use /$PLUGIN:$name" ;;
+        esac
+    done
 }
 
-conflicts=0
-
-install_skill() {
-    local name="$1" target="$dest/$1" state verb
-    state="$(state_of "$name")"
-    case "$state" in
-        foreign)
-            if [ "$force" != 1 ]; then
-                report skipped "$name: $target exists and was not installed from here (--force replaces it)"
-                conflicts=$((conflicts + 1))
-                return 0
-            fi ;;
-        ours-link)
-            if [ "$mode" = "link" ]; then report current "$name"; return 0; fi ;;
-        ours-copy)
-            if [ "$mode" = "copy" ] && diff -rq -x "$MARKER" "$src/$name" "$target" >/dev/null 2>&1; then
-                report current "$name"
-                return 0
-            fi ;;
-    esac
-
-    if [ "$state" = "stale-link" ]; then
-        say "$name: replacing link to $(readlink "$target") (another or missing checkout)"
-    fi
-    if [ "$state" = "none" ]; then verb="installed"; else verb="replaced"; fi
-    [ "$state" = "none" ] || remove_target "$target"
-    if [ "$mode" = "link" ]; then
-        run ln -s "$src/$name" "$target"
-        report "$verb" "$name -> $src/$name"
-    else
-        run cp -R "$src/$name" "$target"
-        if [ "$dry_run" != 1 ]; then
-            {
-                echo "source=$src"
-                echo "commit=$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-            } > "$target/$MARKER"
-        fi
-        report "$verb" "$name (copy)"
-    fi
+# "<source> <path-or-repo>" of the registered marketplace, empty if none.
+marketplace_now() {
+    claude plugin marketplace list --json 2>/dev/null | node -e '
+        let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+            let list = []; try { list = JSON.parse(s); } catch {}
+            const m = list.find(m => m.name === process.argv[1]);
+            if (m) console.log(`${m.source} ${m.path || m.repo || m.url || ""}`);
+        });' "$MARKETPLACE" 2>/dev/null || true
 }
 
-uninstall_skill() {
-    local name="$1" target="$dest/$1" state
-    state="$(state_of "$name")"
-    case "$state" in
-        none)
-            report absent "$name"
-            return 0 ;;
-        foreign)
-            if [ "$force" != 1 ]; then
-                report skipped "$name: $target was not installed from here (--force removes it)"
-                conflicts=$((conflicts + 1))
-                return 0
-            fi ;;
-    esac
-    local note=""
-    if [ "$state" = "stale-link" ]; then note=" (was a link to $(readlink "$target"))"; fi
-    remove_target "$target"
-    report removed "$name$note"
+installed_in_scope() {
+    claude plugin list --json 2>/dev/null | node -e '
+        let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+            let list = []; try { list = JSON.parse(s); } catch {}
+            process.exit(list.some(p => p.id === process.argv[1] && p.scope === process.argv[2]) ? 0 : 1);
+        });' "$PLUGIN@$MARKETPLACE" "$scope" 2>/dev/null
 }
 
 # --- go ---
 if [ "$dry_run" = 1 ]; then say "dry run: nothing below is actually changed"; fi
+say "pre-plugin skills in $skills_dir"
+remove_legacy
 
 if [ "$action" = "uninstall" ]; then
-    say "removing from $dest"
-    for name in $selected; do uninstall_skill "$name"; done
-else
-    say "installing into $dest ($mode)"
-    run mkdir -p "$dest"
-    for name in $selected; do install_skill "$name"; done
+    if installed_in_scope; then
+        run claude plugin uninstall "$PLUGIN@$MARKETPLACE" --scope "$scope"
+    else
+        report absent "$PLUGIN@$MARKETPLACE ($scope scope)"
+    fi
+    if [ "$keep_marketplace" != 1 ] && [ -n "$(marketplace_now)" ]; then
+        run claude plugin marketplace remove "$MARKETPLACE" --scope "$scope"
+    fi
+    say "done; restart Claude Code (or /reload-plugins) to drop the skills"
+    exit 0
+fi
 
-    for name in $selected; do
-        for tool in $(tools_of "$name"); do
-            command -v "$tool" >/dev/null 2>&1 || warn "$name needs \`$tool\`, which is not on PATH"
-        done
-    done
-    if has_word "$selected" "clean-arch" && [ "$dest" != "$HOME/.claude/skills" ]; then
-        warn "clean-arch's templates and docs point at ~/.claude/skills/clean-arch; those commands only resolve if it is installed there too"
+if [ "$github" = 1 ]; then mkt_source="$GITHUB_REPO"; else mkt_source="$src"; fi
+current="$(marketplace_now)"
+if [ -n "$current" ]; then
+    # Switching between this checkout and GitHub means re-registering.
+    if { [ "$github" = 1 ] && [ "${current%% *}" = "directory" ]; } ||
+       { [ "$github" != 1 ] && [ "$current" != "directory $src" ]; }; then
+        say "marketplace $MARKETPLACE currently points at: $current; re-registering"
+        run claude plugin marketplace remove "$MARKETPLACE"
     fi
 fi
 
-if [ "$conflicts" != 0 ]; then
-    say "$conflicts skill(s) skipped, see above"
-    exit 1
+say "installing $PLUGIN@$MARKETPLACE ($scope scope) from $mkt_source"
+if ! run claude plugin marketplace add "$mkt_source" --scope "$scope"; then
+    if [ "$github" = 1 ]; then
+        die "could not add $GITHUB_REPO; the repo is private, so git needs credentials that work without a prompt (e.g. gh auth login && gh auth setup-git)"
+    fi
+    die "could not add the marketplace at $mkt_source"
 fi
-if [ "$action" = "install" ]; then say "done; start a new Claude Code session to pick the skills up"; fi
+run claude plugin install "$PLUGIN@$MARKETPLACE" --scope "$scope"
+
+for name in $skills; do
+    for tool in $(tools_of "$name"); do
+        command -v "$tool" >/dev/null 2>&1 || warn "$name needs \`$tool\`, which is not on PATH"
+    done
+done
+say "done; start a new Claude Code session (or run /reload-plugins) and use /$PLUGIN:<skill>"

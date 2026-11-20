@@ -1,0 +1,8 @@
+{
+  "name": "ironclad",
+  "description": "Rust backends on a strict Clean Architecture (clean-arch), plus a PRD-to-pull-request pipeline: prd-writer, spec-writer, implement-feature, evaluator, fix-runner and two orchestrators.",
+  "author": { "name": "jvalsesia" },
+  "repository": "https://github.com/jvalsesia/ironclad",
+  "keywords": ["rust", "clean-architecture", "ddd", "axum", "sqlx", "prd", "spec", "evaluation"],
+  "skills": ["./"]
+}

@@ -241,14 +241,14 @@ Same feature → both traits. `domain/src/video/video_repository.rs` (write) and
 After **any** structural change (new, moved or renamed file in `domain`, `usecase`, `infra` or `app`), run all 3 gates and fix any failure before declaring the task done:
 
 ```bash
-node ~/.claude/skills/clean-arch/scripts/run-gates.mjs
+node "${CLAUDE_SKILL_DIR}/scripts/run-gates.mjs"
 ```
 
 From a monorepo root the helper auto-detects `apps/backend` or `backend`; otherwise run it from the backend root or pass `--cwd=<backend-path>`. It runs:
 
 1. `cargo fmt --all -- --check` — formatting.
 2. `cargo clippy --workspace --all-targets -- -D warnings` — compiles everything; denies `unwrap`, `expect`, `todo!`, `dbg!` outside tests, `unsafe`, and `std::env::var` outside `config.rs`.
-3. `node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs` — crate dependencies, I/O crates in `domain`/`usecase`, naming per location, use case / entity / VO / handler / consumer shapes, in-memory fakes, `shared` whitelist, `mod.rs` facades, silenced lints (`#[allow]`, `#[rustfmt::skip]`), global state, `Rc`/`RefCell`/`Mutex` in `domain`/`usecase`, generic / `&mut self` / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app`.
+3. `node "${CLAUDE_SKILL_DIR}/scripts/check-architecture-rust.mjs"` — crate dependencies, I/O crates in `domain`/`usecase`, naming per location, use case / entity / VO / handler / consumer shapes, in-memory fakes, `shared` whitelist, `mod.rs` facades, silenced lints (`#[allow]`, `#[rustfmt::skip]`), global state, `Rc`/`RefCell`/`Mutex` in `domain`/`usecase`, generic / `&mut self` / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app`.
 
 Cargo already rejects cross-layer and circular crate dependencies, and clippy includes the type check, so three gates cover the rules. **`git commit --no-verify`, `git push --no-verify` and `#[allow(..)]` to quiet a gate are forbidden.** If a gate fails, fix the code. If you genuinely believe the gate itself is wrong, stop and ask the user — do not bypass.
 

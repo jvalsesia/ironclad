@@ -1,0 +1,12 @@
+{
+  "name": "ironclad",
+  "owner": { "name": "jvalsesia" },
+  "description": "Marketplace for the ironclad plugin: Rust Clean Architecture and a PRD-to-pull-request pipeline.",
+  "plugins": [
+    {
+      "name": "ironclad",
+      "source": "./",
+      "description": "Rust Clean Architecture skill and a PRD-to-pull-request pipeline."
+    }
+  ]
+}

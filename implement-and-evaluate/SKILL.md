@@ -100,7 +100,7 @@ The orchestrator's lockfile lives at `<feature-folder>/.orchestrate.lock`. It is
 
 1. If the lockfile does not exist → write it with the current PID and `<run-id>`. Proceed.
 2. If the lockfile exists, read the PID. Check liveness with `kill -0 <pid>`:
-   - PID alive → abort: "concurrent /implement-and-evaluate run for `<feature-id>`: PID `<N>` alive. Wait for it to finish or stop it, then re-run."
+   - PID alive → abort: "concurrent /ironclad:implement-and-evaluate run for `<feature-id>`: PID `<N>` alive. Wait for it to finish or stop it, then re-run."
    - PID dead → the prior run crashed; overwrite the lockfile and proceed. Log under `Soft-fails`: "stale lockfile from PID `<dead-pid>`; overwrote".
 
 **Lock release:** delete the file at the very end of the run (Step 6) or on any abort path. The release is idempotent — silently succeed if the file is already gone.
@@ -118,7 +118,7 @@ Spawn a fresh subagent via the Agent tool with `subagent_type: general-purpose`.
 Prompt template:
 
 ```
-Invoke the `implement-feature` skill with this input:
+Invoke the `ironclad:implement-feature` skill with this input:
 
 <feature-folder> <tail>
 
@@ -165,7 +165,7 @@ Spawn a `general-purpose` subagent. If this is the **last** evaluator invocation
 Prompt template:
 
 ```
-Invoke the `evaluator` skill with this input:
+Invoke the `ironclad:evaluator` skill with this input:
 
 <feature-folder>
 
@@ -236,7 +236,7 @@ Update `last_failed_set = failed_set`, `last_passed_set = passed_set`.
 Spawn a `general-purpose` subagent. Prompt:
 
 ```
-Invoke the `fix-runner` skill with this input:
+Invoke the `ironclad:fix-runner` skill with this input:
 
 feature=<feature-folder>
 eval-report=<report_path>
@@ -310,7 +310,7 @@ If any other git failure happens (e.g., merge tool exits non-zero unrelated to c
 Capture the conflicted files: `git diff --name-only --diff-filter=U`. Spawn a `general-purpose` subagent with this prompt:
 
 ```
-Invoke the `fix-runner` skill with this input:
+Invoke the `ironclad:fix-runner` skill with this input:
 
 feature=<feature-folder>
 mode=resolve-conflict

@@ -1,8 +1,8 @@
 # Clean Architecture starter — Rust
 
-A Cargo workspace laid out per the `clean-arch` skill (`~/.claude/skills/clean-arch/`): one crate per layer, **axum + sqlx + PostgreSQL**, and one worked feature (`user`) to copy the shapes from.
+A Cargo workspace laid out per the `clean-arch` skill of the ironclad Claude Code plugin (`ironclad:clean-arch`): one crate per layer, **axum + sqlx + PostgreSQL**, and one worked feature (`user`) to copy the shapes from.
 
-Read `~/.claude/skills/clean-arch/SKILL.md` for the prescription and `references/architecture/` for depth. Read this project's `CLAUDE.md` for project-specific addenda.
+Read the skill's `SKILL.md` for the prescription and its `references/architecture/` for depth. Read this project's `CLAUDE.md` for project-specific addenda.
 
 ## Quick start
 
@@ -36,7 +36,10 @@ The dependency rule is enforced by the manifests: `domain`'s `Cargo.toml` does n
 Before any commit, from this folder:
 
 ```bash
-node ~/.claude/skills/clean-arch/scripts/run-gates.mjs
+# the clean-arch folder inside the installed ironclad plugin
+CLEAN_ARCH="$(claude plugin list --json | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")).find(p=>p.id.startsWith("ironclad@"));console.log((p.readFromFolder||p.installPath)+"/clean-arch")')"
+
+node "$CLEAN_ARCH/scripts/run-gates.mjs"
 ```
 
 which runs:
@@ -44,7 +47,7 @@ which runs:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs
+node "$CLEAN_ARCH/scripts/check-architecture-rust.mjs"
 ```
 
 **Never use `--no-verify`, and never silence a lint to get a gate green.**

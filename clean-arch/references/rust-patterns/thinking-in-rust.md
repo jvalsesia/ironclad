@@ -119,7 +119,7 @@ The skill's self-audit is three gates, run from the project root (`scripts/run-g
 |---|---|---|
 | Format | `cargo fmt --check` | Formatting disagreements (none left to debate) |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | Idiom, `unwrap_used`, `expect_used`, `todo`, `dbg_macro`, `print_stdout` / `print_stderr`, `disallowed_methods` (env reads), plus `unsafe_code = "forbid"` from the workspace lints |
-| Architecture | `node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs` | Crate dependencies, I/O crates in `domain` / `usecase`, naming, shapes, fakes, facades, silenced lints, global state, interior mutability in `domain` / `usecase`, generic / stateful / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app` |
+| Architecture | `node <clean-arch skill folder>/scripts/check-architecture-rust.mjs` | Crate dependencies, I/O crates in `domain` / `usecase`, naming, shapes, fakes, facades, silenced lints, global state, interior mutability in `domain` / `usecase`, generic / stateful / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app` |
 
 Habits:
 

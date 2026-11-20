@@ -1,18 +1,18 @@
 ---
 name: implement-and-evaluate-tmux
-description: Dispatches an entire PRD wave in parallel by spawning one isolated git worktree + tmux window per feature, each running `/implement-and-evaluate` independently. The Main Claude session orchestrates only the spawn (worktree creation, tmux layout, throttling), then polls until every team reaches a terminal status, then emits a single consolidated chat report and writes `wave-status.md`. Each team opens its own PR (with conflict resolution) on success; failures keep their worktree for inspection. Use when the user wants to drive a whole wave concurrently — e.g. `/implement-and-evaluate-tmux wave 3`, `/implement-and-evaluate-tmux F03,F05,F07`, `/implement-and-evaluate-tmux wave 3 except F04`.
+description: Dispatches an entire PRD wave in parallel by spawning one isolated git worktree + tmux window per feature, each running `/ironclad:implement-and-evaluate` independently. The Main Claude session orchestrates only the spawn (worktree creation, tmux layout, throttling), then polls until every team reaches a terminal status, then emits a single consolidated chat report and writes `wave-status.md`. Each team opens its own PR (with conflict resolution) on success; failures keep their worktree for inspection. Use when the user wants to drive a whole wave concurrently — e.g. `/ironclad:implement-and-evaluate-tmux wave 3`, `/ironclad:implement-and-evaluate-tmux F03,F05,F07`, `/ironclad:implement-and-evaluate-tmux wave 3 except F04`.
 ---
 
 # Implement with Teammates
 
-End-to-end **wave-level** dispatcher. Where `implement-and-evaluate` shepherds **one** feature through `impl → eval → fix → eval → PR`, this skill spawns **N independent teams** — one per feature in the wave — each in its own git worktree and tmux window, each running its own `/implement-and-evaluate` invocation.
+End-to-end **wave-level** dispatcher. Where `implement-and-evaluate` shepherds **one** feature through `impl → eval → fix → eval → PR`, this skill spawns **N independent teams** — one per feature in the wave — each in its own git worktree and tmux window, each running its own `/ironclad:implement-and-evaluate` invocation.
 
-The Main Claude session is a **dispatcher and consolidator**, not a strict orchestrator: it creates worktrees, lays out the tmux session, throttles concurrency, then polls. It never decides anything mid-cycle for any team — that decision-making lives entirely inside each team's `/implement-and-evaluate`.
+The Main Claude session is a **dispatcher and consolidator**, not a strict orchestrator: it creates worktrees, lays out the tmux session, throttles concurrency, then polls. It never decides anything mid-cycle for any team — that decision-making lives entirely inside each team's `/ironclad:implement-and-evaluate`.
 
 ## Core principles
 
 1. **One team per feature, one worktree per team, one tmux window per team.** Cross-feature parallelism is real and physical (separate processes, separate working trees, separate branches, separate DBs and ports thanks to `scripts/resolve-env.sh`).
-2. **Reuse, don't reinvent.** Each team is literally `claude /implement-and-evaluate F<ID>` running in its window. The retry loop, circuit-breaker, journaling, conflict-resolution, and PR creation are all the existing skill's job.
+2. **Reuse, don't reinvent.** Each team is literally `claude /ironclad:implement-and-evaluate F<ID>` running in its window. The retry loop, circuit-breaker, journaling, conflict-resolution, and PR creation are all the existing skill's job.
 3. **No Main-Claude orchestration during cycles.** The Main session does NOT supervise individual cycles, intervene on stuck teams (other than wall-clock timeout), or rewrite per-team artifacts. It dispatches, waits, consolidates.
 4. **Independence over coordination.** A team's failure does not abort other teams. A user Ctrl-C of the Main session does not kill the teams.
 
@@ -20,7 +20,7 @@ The Main Claude session is a **dispatcher and consolidator**, not a strict orche
 
 ## INPUT
 
-Free-form. Three families of tokens are recognized; everything else is forwarded verbatim to each team's `/implement-and-evaluate` invocation.
+Free-form. Three families of tokens are recognized; everything else is forwarded verbatim to each team's `/ironclad:implement-and-evaluate` invocation.
 
 ### Family 1 — Selection (which features go in this wave)
 
@@ -49,15 +49,15 @@ Each selected feature MUST have:
 | `clean worktrees` | Delete worktrees even on failure. Mutually exclusive with `keep worktrees`. | off |
 | `progress-path=<path>` | Single `prd_progress.json` path used by every team and by the Main reconcile. Forwarded to each team. | auto-discover |
 
-### Family 3 — Forwarded overrides (per-team, passed verbatim to `/implement-and-evaluate`)
+### Family 3 — Forwarded overrides (per-team, passed verbatim to `/ironclad:implement-and-evaluate`)
 
-Anything in `/implement-and-evaluate`'s grammar that is NOT in Family 4 is forwarded verbatim to each team's invocation. Examples: `max <N> retries`, `no retries`, `unlimited retries`, `keep eval env`, `skip lint`, `stub OpenAI`, `only phases 1 and 2`. Same value for all teams (no per-feature targeting in v1).
+Anything in `/ironclad:implement-and-evaluate`'s grammar that is NOT in Family 4 is forwarded verbatim to each team's invocation. Examples: `max <N> retries`, `no retries`, `unlimited retries`, `keep eval env`, `skip lint`, `stub OpenAI`, `only phases 1 and 2`. Same value for all teams (no per-feature targeting in v1).
 
 ### Family 4 — Blocked overrides (incompatible with parallelism)
 
 | Override | Reason | Action |
 |---|---|---|
-| `pause between cycles` | Three panels can't all pause for human input — order is undefined. | Abort with: `"'pause between cycles' incompatible with parallel wave; invoke /implement-and-evaluate per-feature for stepped runs"`. |
+| `pause between cycles` | Three panels can't all pause for human input — order is undefined. | Abort with: `"'pause between cycles' incompatible with parallel wave; invoke /ironclad:implement-and-evaluate per-feature for stepped runs"`. |
 | `pause between phases` | Same. | Same abort. |
 
 ### Override parsing
@@ -72,7 +72,7 @@ Per run:
 
 1. **Tmux session** named `iaet-<wave-tag>-<run-id>` containing:
    - **Window 0 — `dashboard`** running `scripts/dashboard.sh` (copied into the wave dir at Step 3.3) under `watch -n 5`. Source of live status during the wave.
-   - **Windows 1..N — one per feature**, named `<F-ID>-<slug>`, each running `scripts/team-driver.sh` (copied into the wave dir at Step 3.3). The driver `cd`s into the worktree and execs `claude /implement-and-evaluate F<ID> <tail>`; on exit, it writes the team's terminal status file.
+   - **Windows 1..N — one per feature**, named `<F-ID>-<slug>`, each running `scripts/team-driver.sh` (copied into the wave dir at Step 3.3). The driver `cd`s into the worktree and execs `claude /ironclad:implement-and-evaluate F<ID> <tail>`; on exit, it writes the team's terminal status file.
 
 2. **Wave directory** at `.claude/worktrees/.wave-<run-id>/` containing:
    - `wave.lock` — wave-level PID lockfile.
@@ -82,14 +82,14 @@ Per run:
 
 3. **Per-team worktrees** at `.claude/worktrees/F<ID>-<slug>/` (kept on failure unless `clean worktrees`; deleted on success unless `keep worktrees`).
 
-4. **Per-team artifacts inside each worktree** (produced by `/implement-and-evaluate` — not by this skill):
+4. **Per-team artifacts inside each worktree** (produced by `/ironclad:implement-and-evaluate` — not by this skill):
    - `docs/F<ID>-<slug>/orchestration-<ts>.md` (the team's journal)
    - `docs/F<ID>-<slug>/eval-report-<ts>.md` (one per evaluator invocation)
    - Branch `feat/F<ID>-<slug>` pushed (on success) and a PR opened.
 
 5. **Consolidated chat report** emitted by Main Claude after every team reaches terminal status. Format pinned by `references/wave-status-template.md`.
 
-This skill itself never edits source code, never commits, never opens PRs. Code/commits/PRs are produced by the per-team `/implement-and-evaluate` invocations, each from its own worktree.
+This skill itself never edits source code, never commits, never opens PRs. Code/commits/PRs are produced by the per-team `/ironclad:implement-and-evaluate` invocations, each from its own worktree.
 
 ---
 
@@ -119,7 +119,7 @@ This skill itself never edits source code, never commits, never opens PRs. Code/
   - Status `pr-blocked` → emit warning (may overwrite resolution attempt) but include.
   - Status `implementing` → emit warning (likely stale from a prior crashed run) but include.
   - Status `pending` / `fail` / `implemented` → no warning.
-- For each PRD Section 8 dependency of this feature, check status = `done`. If any dep is not `done`, abort with: `"F<ID> depends on F<DEP> (status=<S>); same-wave deps are out of scope. Implement F<DEP> first via /implement-and-evaluate, then re-run."`.
+- For each PRD Section 8 dependency of this feature, check status = `done`. If any dep is not `done`, abort with: `"F<ID> depends on F<DEP> (status=<S>); same-wave deps are out of scope. Implement F<DEP> first via /ironclad:implement-and-evaluate, then re-run."`.
 - **Explicit ID without PRD Section 8 entry** (the user passed `F99` but PRD has no F99 row): skip the dep check for that feature, log a soft-fail `"F<ID> not in PRD Section 8; dep validation skipped"` (recorded in `wave-status.md` Soft-fails at finalize), and proceed. The triple check still applies.
 
 1.6 — **Empty selection after filters** → abort with the explained empty set.
@@ -134,7 +134,7 @@ This skill itself never edits source code, never commits, never opens PRs. Code/
 - **Lock acquisition:**
   1. If the lockfile does not exist → write it with the current PID and `<run-id>`. Proceed.
   2. If it exists, read the PID and check `kill -0 <pid>`:
-     - PID alive → abort: `"concurrent /implement-and-evaluate-tmux run for <run-id>: PID <N> alive. Wait or stop it before re-running."`.
+     - PID alive → abort: `"concurrent /ironclad:implement-and-evaluate-tmux run for <run-id>: PID <N> alive. Wait or stop it before re-running."`.
      - PID dead → prior run crashed; overwrite the lockfile and proceed. Log under `wave-status.md` Soft-fails: `"stale wave lockfile from PID <dead-pid>; overwrote"`.
 - **Lock retention:** see Step 7.5 — the lockfile is intentionally NOT released. New runs use new run-ids; the old lockfile is forensic only.
 
@@ -227,7 +227,7 @@ Throttling and queue management are **split between Step 5 (initial dispatch) an
 └───────────────────────┴───────────────────┘
 ```
 
-- **Pane .0 (left ~70%):** `claude /implement-and-evaluate` via `team-driver.sh`.
+- **Pane .0 (left ~70%):** `claude /ironclad:implement-and-evaluate` via `team-driver.sh`.
 - **Pane .1 (top right):** `services-tail.sh` — `tail -F <worktree>/.pids/{backend,web}.log`. Project-specific log paths (works for projects that put service logs in `.pids/`).
 - **Pane .2 (bottom right):** `ports-tail.sh` — `lsof`-based, **project-agnostic** discovery of TCP ports listened on by processes whose CWD is inside the worktree.
 
@@ -259,7 +259,7 @@ Important: the team-driver is never piped through `| tee` — that breaks claude
 What the team driver (`scripts/team-driver.sh`) does inside each window:
 - Initial status file write (`status=running`, `started_at=<now>`, `phase=spawning`).
 - `cd` into the worktree.
-- `exec claude --dangerously-skip-permissions "/implement-and-evaluate F<ID> <tail>"` (foreground in the tmux window).
+- `exec claude --dangerously-skip-permissions "/ironclad:implement-and-evaluate F<ID> <tail>"` (foreground in the tmux window).
 - On `claude` exit (any reason): parse the team's journal final-verdict block from `docs/F<ID>-<slug>/orchestration-*.md` (newest), write the terminal status file (the `journal=` field is an absolute path), then `sleep 99999` (keeps the window alive for inspection until `tmux kill-window` or session teardown).
 
 The `.log` files captured by `tmux pipe-pane` in 5.2 are debug-only artifacts — neither the dashboard nor Step 7 consumes them.
@@ -319,7 +319,7 @@ A short chat status update each tick (`"3 teams running, 1 in queue, 2 done"`) i
 There are two regimes, with very different correctness implications:
 
 **Regime A — `progress-path` NOT provided (default).**
-Each team's `/implement-and-evaluate` ran inside its own worktree, on its own branch, and wrote to its own branch's copy of `prd_progress.json`. Those writes are **already correct and committed inside the team's branch** — they propagate to `main` when each team's PR is merged. There was never any cross-worktree contention to reconcile.
+Each team's `/ironclad:implement-and-evaluate` ran inside its own worktree, on its own branch, and wrote to its own branch's copy of `prd_progress.json`. Those writes are **already correct and committed inside the team's branch** — they propagate to `main` when each team's PR is merged. There was never any cross-worktree contention to reconcile.
 
 → **Do NOT touch `prd_progress.json` in the main checkout.** Writing it here would create uncommitted dirty state in the main working tree that conflicts with the upcoming PR merges (`git merge` blocks on dirty trees; even if it didn't, it'd produce per-line conflicts because each PR carries the same field updates).
 
@@ -345,7 +345,7 @@ If a journal is missing or unparseable in either regime, log a soft-fail and ski
 
 7.4 — **Emit consolidated chat report** per `references/wave-status-template.md`'s "Chat Report" section. Format D (compact summary on top + failure detail per failing team).
 
-7.5 — **DO NOT release the wave lockfile yet.** Leave it for forensic clarity. Future `/implement-and-evaluate-tmux` runs use a different `<run-id>`, so they don't collide. The wave lockfile is implicitly retired the moment the chat report is emitted.
+7.5 — **DO NOT release the wave lockfile yet.** Leave it for forensic clarity. Future `/ironclad:implement-and-evaluate-tmux` runs use a different `<run-id>`, so they don't collide. The wave lockfile is implicitly retired the moment the chat report is emitted.
 
 7.6 — **Note the tmux session is still alive.** The chat report includes the attach command. The user can inspect failing-team windows, then `tmux kill-session -t iaet-<wave-tag>-<run-id>` to tear it down. (Don't kill it ourselves — preserves user inspection.)
 
@@ -353,7 +353,7 @@ If a journal is missing or unparseable in either regime, log a soft-fail and ski
 
 ## PROGRESS TRACKING
 
-This skill never writes `prd_progress.json` during Steps 1–6. Each team's `/implement-and-evaluate` writes to its own branch's copy of the file (or to a shared file under Regime B; see Step 7.1).
+This skill never writes `prd_progress.json` during Steps 1–6. Each team's `/ironclad:implement-and-evaluate` writes to its own branch's copy of the file (or to a shared file under Regime B; see Step 7.1).
 
 **Two regimes determined by `progress-path`:**
 
@@ -388,16 +388,16 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 
 **Never:**
 
-- Edit source code, commit, push, or open PRs from the Main session. All of that is done by per-team `/implement-and-evaluate` from inside the team's own worktree.
+- Edit source code, commit, push, or open PRs from the Main session. All of that is done by per-team `/ironclad:implement-and-evaluate` from inside the team's own worktree.
 - Block in a foreground `Bash` call waiting for teams. Bash's 10-minute timeout will kill long waves. Use `Monitor` or `ScheduleWakeup`.
-- Kill a team mid-cycle for any reason except wall-clock timeout. The team's `/implement-and-evaluate` owns the decision tree (circuit-breaker, retry budget). The Main session does not intervene.
+- Kill a team mid-cycle for any reason except wall-clock timeout. The team's `/ironclad:implement-and-evaluate` owns the decision tree (circuit-breaker, retry budget). The Main session does not intervene.
 - Kill teams on Main Claude Ctrl-C / abort. Teams in tmux survive the Main session's death by design.
 - Forward Family 4 overrides (`pause between cycles` / `pause between phases`) — abort upfront.
 - Run two waves with the same `<run-id>` — the run-id is timestamp-based and never reused.
 - Modify another feature's `prd_progress.json` entry beyond the selected wave members.
 - Delete a `timeout`-status worktree, even if `clean worktrees` is set. Timeout = debug needed.
 - Open a PR ourselves on a wave-level "all green" check. Each team owns its own PR.
-- Re-implement any logic from `/implement-and-evaluate`. Bug fixes go upstream.
+- Re-implement any logic from `/ironclad:implement-and-evaluate`. Bug fixes go upstream.
 
 ---
 
@@ -418,7 +418,7 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 | `no retries` | 3 | Forwarded to each team. | — |
 | `unlimited retries` | 3 | Forwarded to each team. | — |
 | `keep eval env` | 3 | Forwarded to each team. | off |
-| (other) | 3 | Forwarded verbatim to each team's `/implement-and-evaluate`. | — |
+| (other) | 3 | Forwarded verbatim to each team's `/ironclad:implement-and-evaluate`. | — |
 | `pause between cycles` | 4 | **Abort.** | — |
 | `pause between phases` | 4 | **Abort.** | — |
 
@@ -439,11 +439,11 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 - **Worktree exists from prior run** → interactive prompt (Step 2.3). If user declines, abort the whole wave.
 - **`gh` not authenticated** → abort upfront in Step 2.4. PR creation would fail at end of every team otherwise.
 - **`git worktree add` fails** (uncommitted changes in main? branch already exists?) → abort with the git error; cleanup any worktrees already created in this run.
-- **A team's `/implement-and-evaluate` aborts pre-phase** (missing dep, contract empty) → its journal's final-verdict captures this; status file gets `status=aborted`. Other teams continue.
+- **A team's `/ironclad:implement-and-evaluate` aborts pre-phase** (missing dep, contract empty) → its journal's final-verdict captures this; status file gets `status=aborted`. Other teams continue.
 - **Wall-clock timeout fires** → `wave-tick.sh` kills that team's tmux window (`tmux kill-window`) and writes `status=timeout`. Worktree preserved. Other teams continue.
 - **All teams timeout** → consolidated report shows N timeouts. Wave status = `all-failed`. User investigates each worktree.
 - **Team's claude process crashes without writing journal final-verdict** → status file shows `status=running` (driver never got to write terminal). Main treats as `aborted` after timeout fires; logs `crashed-without-status` in soft-fails.
-- **PR collision: two teams' PRs touch the same files** → not the skill's problem. Each `/implement-and-evaluate` resolves merge conflicts at its own Step 7. If the user later merges both PRs in sequence, GitHub handles the human merge of the second.
+- **PR collision: two teams' PRs touch the same files** → not the skill's problem. Each `/ironclad:implement-and-evaluate` resolves merge conflicts at its own Step 7. If the user later merges both PRs in sequence, GitHub handles the human merge of the second.
 - **Main Claude Ctrl-C / SIGTERM** → teams continue in tmux. No consolidated chat report emitted. User can manually `tmux attach -t iaet-<wave-tag>-<run-id>`. The tmux session was created detached (`new-session -d`) precisely so it outlives the Main session.
 - **`max-parallel=1`** → fully serial wave; still runs in worktrees + tmux for isolation. Useful for debugging cross-feature contention hypotheses.
 - **`max-parallel=N` larger than number of features** → no throttling; everyone spawns immediately. Fine.
@@ -468,7 +468,7 @@ In both regimes, `wave-status.md` is the canonical wave-level snapshot (always w
 **`scripts/`** — executables copied into the wave dir at Step 3.3 and run from there:
 - `scripts/spawn-team.sh` — creates one team's three-pane tmux window and its initial status file. Called once per feature in Step 5.2 and by `wave-tick.sh` for queue respawns.
 - `scripts/wave-tick.sh` — one Step 6 polling tick: enforces the per-team timeout, respawns from `queue.txt`, prints a summary and `ALL_DONE` when the wave is finished.
-- `scripts/team-driver.sh` — bash script run in the LEFT pane (.0) of each team's tmux window. Spawns `claude /implement-and-evaluate`, writes terminal status file on exit.
+- `scripts/team-driver.sh` — bash script run in the LEFT pane (.0) of each team's tmux window. Spawns `claude /ironclad:implement-and-evaluate`, writes terminal status file on exit.
 - `scripts/services-tail.sh` — bash script run in the TOP-RIGHT pane (.1) of each team's tmux window. Waits for `<worktree>/.pids/{backend,web}.log` and `tail -F`s them so the user sees server output live next to claude. Project-specific (assumes `.pids/` log paths).
 - `scripts/ports-tail.sh` — bash script run in the BOTTOM-RIGHT pane (.2). Periodically `lsof`-discovers TCP LISTEN sockets owned by processes whose CWD is inside the worktree. **Project-agnostic** — no `.env` reads, no project-specific assumptions.
 - `scripts/dashboard.sh` — bash script for window 0; reads journals + status files, renders the live status table.

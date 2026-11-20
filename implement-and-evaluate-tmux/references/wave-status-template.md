@@ -53,7 +53,7 @@ Both follow the same structure: a compact summary at the top, then a per-failing
 - **Items still failing:** `API-TRANSCRIBE-CONCURRENT-01`, `EVENT-TRANSCRIPTION-PARTIAL-02`
 - **Latest eval-report:** `docs/F05-transcription/eval-report-<ts>.md`
 - **Worktree:** `.claude/worktrees/F05-transcription/`
-- **Re-run:** `cd .claude/worktrees/F05-transcription && claude /implement-and-evaluate F05` (resumes from current branch state)
+- **Re-run:** `cd .claude/worktrees/F05-transcription && claude /ironclad:implement-and-evaluate F05` (resumes from current branch state)
 
 ---
 
@@ -105,7 +105,7 @@ F05 transcription — stuck
   Reason: circuit breaker tripped at cycle 4 (same FAIL set, zero PASS delta)
   Items still failing: API-TRANSCRIBE-CONCURRENT-01, EVENT-TRANSCRIPTION-PARTIAL-02
   Eval-report: docs/F05-transcription/eval-report-<ts>.md
-  Re-run: `cd .claude/worktrees/F05-transcription && claude /implement-and-evaluate F05`
+  Re-run: `cd .claude/worktrees/F05-transcription && claude /ironclad:implement-and-evaluate F05`
 ────────────────────────────────────────
 
 Wave status file: .claude/worktrees/.wave-<run-id>/wave-status.md
@@ -131,7 +131,7 @@ Overrides ignored: (none)                                                  (omit
 
 ## Per-team status vocabulary
 
-Same as `/implement-and-evaluate`'s final-verdict status, plus `timeout` (added by this skill when wall-clock exceeds `team-timeout`):
+Same as `/ironclad:implement-and-evaluate`'s final-verdict status, plus `timeout` (added by this skill when wall-clock exceeds `team-timeout`):
 
 `success` · `manual-pending` · `stuck` · `exhausted` · `aborted` · `pr-blocked` · `timeout`
 
