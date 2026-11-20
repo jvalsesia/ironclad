@@ -38,6 +38,8 @@ Skill-to-skill runtime dependencies and required CLI tools are hardcoded in `ins
 
 ## clean-arch
 
+A prescriptive Clean Architecture + tactical DDD skill for Rust backends: one Cargo workspace layout (`domain` ← `usecase` ← `infra` ← `app`, dependencies inward only), 19 rules, canonical shapes, and gates that check them mechanically. Claude loads it when a task touches backend code, rather than the user invoking it by hand.
+
 Independent of the pipeline, and **Rust only** (axum + sqlx + PostgreSQL); TypeScript support was removed. `SKILL.md` holds the dependency rule, the 19 rules and canonical shapes; depth lives in `references/architecture/` (layout, rules, shapes, anti-patterns) and `references/rust-patterns/` (Rust idioms and design patterns). The rules exist in three places that must change together: the prose in `SKILL.md` + `references/architecture/`, the enforcement in `scripts/check-architecture-rust.mjs`, and the compiling example in `templates/initial-project-rust/`.
 
 - `scripts/run-gates.mjs` runs the 3 gates (cargo fmt, cargo clippy `-D warnings`, `check-architecture-rust.mjs`) in the cwd, `apps/backend` or `backend`, or `--cwd=`.

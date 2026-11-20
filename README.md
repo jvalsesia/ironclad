@@ -108,6 +108,18 @@ node ~/.claude/skills/clean-arch/scripts/run-gates.mjs
 
 It runs the 3 Rust gates: `cargo fmt --check`, `cargo clippy -D warnings`, and the architecture check.
 
+## clean-arch
+
+A prescriptive Clean Architecture and tactical DDD skill for Rust backends (axum + tokio, sqlx + PostgreSQL). It fixes one Cargo workspace layout, `domain` ← `usecase` ← `infra` ← `app`, with dependencies pointing inward only, and codifies 19 rules plus canonical shapes for entities, value objects, use cases, ports, repositories, handlers and errors.
+
+| Path | Contents |
+|---|---|
+| [`SKILL.md`](clean-arch/SKILL.md) | The dependency rule, the 19 rules, canonical shapes and the self-audit gates. |
+| [`references/architecture/`](clean-arch/references/architecture/) | Depth on workspace layout, domain modeling, use cases and ports, infra with axum + sqlx, and anti-patterns. |
+| [`references/rust-patterns/`](clean-arch/references/rust-patterns/) | Rust idioms and classic design patterns, mapped onto the layers. |
+| [`scripts/`](clean-arch/scripts/) | `run-gates.mjs` (fmt, clippy, architecture check) and `check-architecture-rust.mjs`, which enforces the rules mechanically. |
+| [`templates/`](clean-arch/templates/) | A compiling, violation-free starter project and the `CLAUDE.md` template for projects that use the skill. |
+
 ## What the skills leave in a project
 
 ```
