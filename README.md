@@ -153,11 +153,10 @@ uninstall.sh      shorthand for install.sh --uninstall
 
 ## Development
 
-The `clean-arch` architecture checker has tests, run with Node's built-in test runner:
+The `clean-arch` architecture checker has tests, run from the repo root with Node's built-in test runner:
 
 ```bash
-cd clean-arch
-npm run test:rust-arch    # Rust architecture checker
+npm --prefix clean-arch run test:rust-arch    # Rust architecture checker
 ```
 
 With the default symlink install, edits made in this checkout take effect in the next Claude Code session.
