@@ -1,6 +1,6 @@
 # mba-skills
 
-Claude Code skills for taking a product from an idea to merged pull requests: write the PRD, spec each feature, implement it, verify it against a behavior contract, and fix what fails. A separate skill keeps TypeScript and Rust backends on a strict Clean Architecture layout.
+Claude Code skills for taking a product from an idea to merged pull requests: write the PRD, spec each feature, implement it, verify it against a behavior contract, and fix what fails. A separate skill keeps Rust backends on a strict Clean Architecture layout.
 
 ## The pipeline
 
@@ -33,7 +33,7 @@ Each stage reads the files the previous one wrote, so the stages can be run one 
 | [`fix-runner`](fix-runner/SKILL.md) | Turns failed contract items green, or resolves the merge conflicts of a PR. |
 | [`implement-and-evaluate`](implement-and-evaluate/SKILL.md) | Runs `implement-feature` once, then alternates `evaluator` and `fix-runner` until the contract holds, the retry budget (default 3) runs out, or a circuit breaker trips. Opens the PR on success and keeps a journal of every cycle. |
 | [`implement-and-evaluate-tmux`](implement-and-evaluate-tmux/SKILL.md) | Runs a whole PRD wave at once: one git worktree and one tmux window per feature, each running `/implement-and-evaluate`, with a live dashboard and a consolidated report at the end. |
-| [`clean-arch`](clean-arch/SKILL.md) | Clean Architecture and tactical DDD for TypeScript and Rust backends: 19 rules, a canonical folder structure, a project scaffolder, and gates that check the rules mechanically. Independent of the pipeline. |
+| [`clean-arch`](clean-arch/SKILL.md) | Clean Architecture and tactical DDD for Rust backends (axum + sqlx): 19 rules, a canonical Cargo workspace layout, a compiling starter project, and gates that check the rules mechanically. Independent of the pipeline. |
 
 Each `SKILL.md` documents its full input grammar, overrides and edge cases.
 
@@ -64,7 +64,7 @@ Things to know:
 - **Existing skills are left alone.** A skill of the same name that the installer did not put there is skipped and the script exits 1. `--force` replaces it.
 - **Copies are overwritten on re-run.** Edits made inside a copied skill are lost the next time the installer refreshes it.
 - **`--project` copies by default.** A symlink committed to a project would point at a path that exists only on your machine. `--link` overrides this.
-- **`clean-arch` expects `~/.claude/skills`.** Its templates and linter docs reference `~/.claude/skills/clean-arch/`, so those commands only resolve when it is installed there.
+- **`clean-arch` expects `~/.claude/skills`.** Its templates and docs reference `~/.claude/skills/clean-arch/`, so those commands only resolve when it is installed there.
 
 Without a checkout, the installer clones the repo into `~/.local/share/mba-skills` and installs from that clone. The repo is private, so fetch the script through an authenticated `gh`:
 
@@ -78,7 +78,7 @@ gh api repos/jvalsesia/mba-skills/contents/install.sh \
 - [Claude Code](https://claude.com/claude-code).
 - `git` in the target project. The implementation skills commit as they go.
 - `gh`, authenticated, for the steps that open or read pull requests (`implement-and-evaluate`, and `fix-runner` when given a PR).
-- `node` for the `clean-arch` scaffolder and gates.
+- `node` and `cargo` for the `clean-arch` gates.
 - `tmux`, `watch`, `lsof` and the `claude` CLI on `PATH` for `implement-and-evaluate-tmux`.
 
 The installer warns when a tool needed by a selected skill is missing. It does not check for `watch` or `lsof`.
@@ -106,7 +106,7 @@ Features can be named by ID (`F03`), by folder (`docs/F03-video-upload/`), by a 
 node ~/.claude/skills/clean-arch/scripts/run-gates.mjs
 ```
 
-The helper detects whether the backend is TypeScript (6 gates) or Rust (3 gates).
+It runs the 3 Rust gates: `cargo fmt --check`, `cargo clippy -D warnings`, and the architecture check.
 
 ## What the skills leave in a project
 
@@ -132,18 +132,16 @@ docs/
   references/     templates and depth docs, loaded on demand
   scripts/        executables the skill runs
 clean-arch/
-  linters/        ESLint, dependency-cruiser, husky and lint-staged configs
-  templates/      starter projects (TypeScript and Rust) and scaffold fragments
+  templates/      the Rust starter project and the CLAUDE.md template for projects using the skill
 install.sh
 ```
 
 ## Development
 
-The `clean-arch` scripts have tests, run with Node's built-in test runner:
+The `clean-arch` architecture checker has tests, run with Node's built-in test runner:
 
 ```bash
 cd clean-arch
-npm run test:scaffold     # project scaffolder
 npm run test:rust-arch    # Rust architecture checker
 ```
 

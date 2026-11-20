@@ -9,11 +9,15 @@ import { checkArchitecture } from '../check-architecture-rust.mjs';
 
 const TEMPLATE = resolve(dirname(fileURLToPath(import.meta.url)), '../../templates/initial-project-rust');
 
+/** Copies the starter without build output (`target/`, created by the gates). */
+const copyTemplate = (root) =>
+  cpSync(TEMPLATE, root, { recursive: true, filter: (src) => src !== join(TEMPLATE, 'target') });
+
 /** Copies the starter, applies `mutate(root)`, returns the rule ids reported. */
 function rulesAfter(mutate) {
   const root = mkdtempSync(join(tmpdir(), 'clean-arch-rust-'));
   try {
-    cpSync(TEMPLATE, root, { recursive: true });
+    copyTemplate(root);
     mutate(root);
     return checkArchitecture(root).violations.map((v) => v.rule);
   } finally {
@@ -57,7 +61,7 @@ test('the starter has no violations', () => {
 test('the single-crate layout is recognized and clean', () => {
   const root = mkdtempSync(join(tmpdir(), 'clean-arch-rust-'));
   try {
-    cpSync(TEMPLATE, root, { recursive: true });
+    copyTemplate(root);
     toSingleCrate(root);
     const { layout, violations } = checkArchitecture(root);
     assert.equal(layout, 'single-crate');
@@ -130,6 +134,48 @@ const cases = [
     (r) => addCode(r, `${INFRA}/http/user/create_user_handler.rs`, 'const _: StatusCode = StatusCode::NOT_FOUND;')],
   ['two handlers in one file', 'handler-shape',
     (r) => addCode(r, `${INFRA}/http/user/create_user_handler.rs`, 'pub async fn other_handler() {}')],
+  ['an #[allow] that silences a lint', 'no-silenced-lint',
+    (r) => addCode(r, `${INFRA}/http/user/create_user_handler.rs`, '#[allow(clippy::unwrap_used)]\nfn helper() {}')],
+  ['an inner #![allow]', 'no-silenced-lint',
+    (r) => edit(r, `${DOMAIN}/lib.rs`, (s) => `#![allow(dead_code)]\n${s}`)],
+  ['a #[rustfmt::skip]', 'no-silenced-lint',
+    (r) => addCode(r, `${USECASE}/user/create_user.rs`, '#[rustfmt::skip]\nconst X: u8 = 1;')],
+  ['a static mut', 'no-global-state',
+    (r) => addCode(r, `${INFRA}/persistence/db_error.rs`, 'static mut COUNTER: u64 = 0;')],
+  ['lazy_static!', 'no-global-state',
+    (r) => addCode(r, `${INFRA}/persistence/db_error.rs`, 'lazy_static! { static ref X: u8 = 1; }')],
+  ['a static OnceLock holding a pool', 'no-global-state',
+    (r) => addCode(r, `${INFRA}/persistence/db_error.rs`, 'static POOL: std::sync::OnceLock<sqlx::PgPool> = std::sync::OnceLock::new();')],
+  ['a static lock', 'no-global-state',
+    (r) => addCode(r, `${INFRA}/persistence/db_error.rs`, 'static CACHE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());')],
+  ['a RefCell in an entity', 'no-interior-mutability',
+    (r) => addCode(r, `${DOMAIN}/user/user_entity.rs`, 'pub struct Holder { inner: std::cell::RefCell<u8> }')],
+  ['an Arc<Mutex> in a use case', 'no-interior-mutability',
+    (r) => addCode(r, `${USECASE}/user/create_user.rs`, 'pub(crate) type Shared = std::sync::Arc<Mutex<Vec<u8>>>;')],
+  ['a use case generic over its repository', 'usecase-generic-ports',
+    (r) => edit(r, `${USECASE}/user/create_user.rs`, (s) => s.replace(/pub struct CreateUserUseCase\b/, 'pub struct CreateUserUseCase<R>'))],
+  ['execute taking &mut self', 'usecase-stateless',
+    (r) => edit(r, `${USECASE}/user/create_user.rs`, (s) => s.replace(/fn execute\(\s*&self/, 'fn execute(&mut self'))],
+  ['a use case holding another use case', 'usecase-no-composition',
+    (r) => addCode(r, `${USECASE}/user/create_user.rs`, 'pub(crate) type Other = std::sync::Arc<crate::user::SuspendUserUseCase>;')],
+  ['Deref in the domain', 'no-deref-in-domain',
+    (r) => addCode(r, `${DOMAIN}/user/email_vo.rs`, 'impl std::ops::Deref for Email { type Target = String; fn deref(&self) -> &String { &self.0 } }')],
+  ['Default on an entity', 'no-default-entity-vo',
+    (r) => edit(r, `${DOMAIN}/user/user_entity.rs`, (s) => s.replace('#[derive(Debug, Clone)]', '#[derive(Debug, Clone, Default)]'))],
+  ['an infallible From<String> on a value object', 'vo-no-infallible-from',
+    (r) => addCode(r, `${DOMAIN}/user/email_vo.rs`, 'impl From<String> for Email { fn from(s: String) -> Self { Self(s) } }')],
+  ['an infallible From<&str> on a value object', 'vo-no-infallible-from',
+    (r) => addCode(r, `${DOMAIN}/user/email_vo.rs`, "impl<'a> From<&'a str> for Email { fn from(s: &'a str) -> Self { Self(s.to_owned()) } }")],
+  ['a port without Send + Sync', 'port-send-sync',
+    (r) => edit(r, `${DOMAIN}/user/user_repository.rs`, (s) => s.replace('pub trait UserRepository: Send + Sync {', 'pub trait UserRepository {'))],
+  ['a port with Send but not Sync', 'port-send-sync',
+    (r) => edit(r, `${DOMAIN}/user/user_queries.rs`, (s) => s.replace('pub trait UserQueries: Send + Sync {', 'pub trait UserQueries: Send {'))],
+  ['anyhow in the infra manifest', 'anyhow-only-in-app',
+    (r) => edit(r, 'crates/infra/Cargo.toml', (s) => s.replace('uuid.workspace = true', 'uuid.workspace = true\nanyhow.workspace = true'))],
+  ['anyhow in domain source', 'anyhow-only-in-app',
+    (r) => addCode(r, `${DOMAIN}/user/user_entity.rs`, 'pub type Fallible = anyhow::Result<()>;')],
+  ['Default on a value object', 'no-default-entity-vo',
+    (r) => addCode(r, `${DOMAIN}/user/email_vo.rs`, 'impl Default for Email { fn default() -> Self { Self(String::new()) } }')],
 ];
 
 for (const [name, rule, mutate] of cases) {
@@ -145,6 +191,36 @@ test('flags an outward import in the single-crate layout', () => {
     addCode(root, 'src/domain/user/user_entity.rs', 'pub type Repo = crate::infra::repository::user::pg_user_repository::PgUserRepository;');
   });
   assert.ok(rules.includes('layer-import'), `got [${rules.join(', ')}]`);
+});
+
+test('a static LazyLock<Regex> is not global state', () => {
+  const rules = rulesAfter((root) =>
+    addCode(root, `${INFRA}/persistence/db_error.rs`, 'static SLUG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| todo_regex());'));
+  assert.ok(!rules.includes('no-global-state'), `got [${rules.join(', ')}]`);
+});
+
+test('#![expect(..)] is not a silenced lint', () => {
+  // The starter's config.rs uses `#![expect(clippy::disallowed_methods)]`.
+  const { violations } = checkArchitecture(TEMPLATE);
+  assert.equal(violations.filter((v) => v.rule === 'no-silenced-lint').length, 0);
+});
+
+test('TryFrom<String> on a value object is allowed', () => {
+  const rules = rulesAfter((root) =>
+    addCode(root, `${DOMAIN}/user/email_vo.rs`, 'impl TryFrom<String> for Email { type Error = UserError; fn try_from(s: String) -> Result<Self, UserError> { Self::create(&s) } }'));
+  assert.ok(!rules.includes('vo-no-infallible-from'), `got [${rules.join(', ')}]`);
+});
+
+test('a port with Send + Sync in a where clause is accepted', () => {
+  const rules = rulesAfter((root) =>
+    edit(root, `${DOMAIN}/user/user_repository.rs`, (s) => s.replace('pub trait UserRepository: Send + Sync {', 'pub trait UserRepository\nwhere\n    Self: Send + Sync,\n{')));
+  assert.ok(!rules.includes('port-send-sync'), `got [${rules.join(', ')}]`);
+});
+
+test('a Mutex inside an infra adapter is allowed', () => {
+  const rules = rulesAfter((root) =>
+    addCode(root, `${INFRA}/persistence/db_error.rs`, 'pub(crate) struct Cache { inner: std::sync::Mutex<Vec<u8>> }'));
+  assert.ok(!rules.includes('no-interior-mutability'), `got [${rules.join(', ')}]`);
 });
 
 test('test modules are exempt from the I/O ban', () => {

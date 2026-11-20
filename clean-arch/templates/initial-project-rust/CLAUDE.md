@@ -2,7 +2,7 @@
 
 This project follows the Clean Architecture + tactical DDD philosophy defined in the global skill `clean-arch` (`~/.claude/skills/clean-arch/`), in its **Rust** form.
 
-**Before any structural change** (creating, moving, renaming, or modifying an entity, value object, use case, repository, queries, handler, routes, DTO, error, row mapping, gateway, middleware, or the composition root), invoke the skill via the Skill tool and read `references/rust/`.
+**Before any structural change** (creating, moving, renaming, or modifying an entity, value object, use case, repository, queries, handler, routes, DTO, error, row mapping, gateway, middleware, or the composition root), invoke the skill via the Skill tool and read `references/architecture/`.
 
 ## Project stack
 
@@ -16,7 +16,7 @@ This project follows the Clean Architecture + tactical DDD philosophy defined in
 
 ## Structural rules
 
-The 19 inviolable rules are defined in `~/.claude/skills/clean-arch/SKILL.md`; their Rust form is the table in `references/rust/workspace-layout.md` § 6.
+The 19 inviolable rules are defined in `~/.claude/skills/clean-arch/SKILL.md`; their Rust form is the table in `references/architecture/workspace-layout.md` § 6. For the reasoning behind them and the Rust idioms and patterns that fit each layer, read `references/rust-patterns/thinking-in-rust.md`.
 
 ## Self-audit gates
 

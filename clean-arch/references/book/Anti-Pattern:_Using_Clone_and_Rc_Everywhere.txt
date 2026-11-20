@@ -1,0 +1,699 @@
+Anti-Pattern: Using Clone and Rc
+Everywhere
+In this chapter, we will discuss more common anti-patterns in Rust, focusing on the overuse of
+cloning and smart pointers in an effort to avoid dealing with ownership and borrowing. We'll
+see how developers often reach for quick fixes when encountering borrow checker errors, and
+we will discuss why these approaches typically lead to inefficient, messy, and potentially
+buggy code.
+First, we'll explore how developers try to avoid thinking about ownership and borrowing
+altogether, leading to designs that fight against the way Rust is intended to be used. Then,
+we'll examine the temptation to solve every ownership conflict with clone(), and why this
+creates both performance and correctness issues. Finally, we'll look at the misuse of reference
+counting and interior mutability (via Rc<RefCell<>>) as a misguided way to circumvent the
+borrow checker, and look at situations where that is the correct solution.
+We will also continue our calculator project. We'll add some features that access data in
+different ways and find that the borrow checker will take issue with our approach. We'll first
+try to get around these issues with what seem like easy solutions, but we will find that they
+lead to bad design. We'll look at ways to do these things in a way that is more in line with the
+way that Rust works.
+In this chapter, we're going to cover the following main topics:
+•Avoiding ownership concerns
+•Cloning everything
+•Misusing Rc and RefCell (and friends)Chapter 3
+56
+Technical requirements
+The source code for the exercises can be found on GitHub at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust. The repository is
+organized by chapter. The relevant exercises for this chapter are at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust/tree/main/ch3.
+Avoiding ownership concerns
+In this section, we will discuss how developers often try to sidestep Rust's ownership system
+entirely rather than working with it. We'll look at why this method produces designs that are
+problematic and investigate different options that support Rust's ownership paradigm.
+idx_38846d90
+The allure of ignoring ownership
+The ownership structure of Rust may seem like an extra burden to developers when they first
+come across it. Rust's stringent guidelines regarding who owns what and when appear
+constrictive and annoying to someone from languages where data may be freely exchanged
+and altered. Although the fundamental rules themselves are straightforward – each value has
+exactly one owner, borrowing allows temporary access without taking ownership, and
+mutable borrows are exclusive – it's tempting to look for ways to ignore these rules entirely.
+Let's look at how this manifests in our calculator project. We want to add a feature to track
+calculation history and allow recalling previous results.
+For this feature, our calculator needs to maintain a history of calculations that can be both
+viewed and modified by different parts of the program. We want some components to only
+view the history, while others need to modify it. In many languages, we might implement this
+using interfaces or abstract classes to control access.
+In a language such as Java or Python, this would seem relatively simple. Translating this to
+Rust, we can create a trait for components that need to access the history and a trait for
+components that need to modify the history. We could then implement both traits for
+Calculator. Let's try a Rust implementation.
+First, let's define our data structures and traits. We'll create types to hold calculation results
+and to access the expression history. Then, we'll wrap them up in a Calculator struct:
+idx_06a7886a
+struct CalculationResult {
+expression: String,
+result: f64,
+}57
+Anti-Pattern: Using Clone and Rc Everywhere
+struct Calculator {
+history: Vec<CalculationResult>,
+current_expression: Option<String>,
+}
+trait HistoryViewer {
+fn view_history(&self) -> &[CalculationResult];
+fn get_last_result(&self) -> Option<f64>;
+}
+trait HistoryManager {
+fn add_to_history(&self, expression: String, result: f64);
+fn clear_history(&self);
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+history: Vec::new(),
+current_expression: None,
+}
+}
+}
+Here, CalculationResult is our container for results. It keeps the numeric value and also the
+expression that produced it. We've also defined two traits to work with calculation history:
+HistoryViewer is our interface for reading history, while HistoryManager lets us add to and
+erase history. Calculator then maintains history and tracks the current expression by
+wrapping an expression Vec and the most recent expression as a String.
+Now, we implement the traits defined in the preceding snippet to control access. We'll start
+with HistoryViewer, which provides read-only access to history:
+idx_fd9dccb4
+impl HistoryViewer for Calculator {
+fn view_history(&self) -> &[CalculationResult] {
+&self.history
+}
+fn get_last_result(&self) -> Option<f64> {
+self.history.last().map(|r| r.result)Chapter 3
+58
+}
+}
+Implementing HistoryViewer works fine. We can reference the data that we need with &self,
+and the compiler is happy.
+However, we run into trouble with our implementation of HistoryManager, which needs to
+modify data:
+impl HistoryManager for Calculator {
+// This won't compile - we need &mut self to modify history
+fn add_to_history(&self, expression: String, result: f64) {
+self.history.push(CalculationResult {
+expression,
+result,
+});
+}
+fn clear_history(&self) {
+self.history.clear();
+}
+}
+This design seems reasonable at first. We have separate traits for viewing and modifying
+history, allowing us to give different parts of our program different levels of access. However, as
+we see in add_to_history, since we're attempting to change self.history using a shared
+reference to self, it won't compile. Changing it to &mut self would work, but then we would
+need mutable references to Calculator everywhere we want to use history.
+idx_17748a67
+It's tempting to look for answers that allow us to act as though ownership doesn't exist, and
+interior mutability (where we use a type such as RefCell to allow us to modify data through an
+immutable reference) seems like a quick fix. Let's try making our code compile by wrapping
+our data in RefCell:
+use std::cell::RefCell;
+struct Calculator {
+history: RefCell<Vec<CalculationResult>>,
+current_expression: RefCell<Option<String>>,
+}59
+Anti-Pattern: Using Clone and Rc Everywhere
+impl HistoryManager for Calculator {
+// Now this "works" - but at what cost?
+fn add_to_history(&self, expression: String, result: f64) {
+self.history.borrow_mut().push(CalculationResult {
+expression,
+result,
+});
+}
+fn clear_history(&self) {
+self.history.borrow_mut().clear();
+}
+}
+Now, our code compiles, but we've introduced several problems. Rather than using compile-
+time guarantees, we are now relying on runtime borrow checking. This introduces the
+potential for panics occurring when running the calculator, which the compiler could have
+prevented, ensuring safety.
+The code is also more difficult to read and to reason about because we are hiding mutation
+behind shared references. Sometimes that's the correct approach, but here, it's not adding
+anything.
+Why does ownership matter?
+Instead of fighting the borrow checker, let's try to make our calculator work within the
+ownership rules. We can redesign our API to make ownership and mutability requirements
+explicit and clear by separating read-only operations from those that need mutation, and
+creating specific types for different kinds of access. Let's redesign with explicit ownership:
+idx_ccc24f39
+struct Calculator {
+history: Vec<CalculationResult>,
+current_expression: Option<String>,
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+history: Vec::new(),
+current_expression: None,
+}
+}Chapter 3
+60
+We can now divide the API here based on what access is required. We'll start by defining
+methods that only need to read. Here, we can just use &self because we only need immutable
+access. We think about what kind of access is needed and limit it to only what is required:
+fn view_history(&self) -> &[CalculationResult] {
+&self.history
+}
+fn get_last_result(&self) -> Option<f64> {
+self.history.last().map(|r| r.result)
+}
+Now, we can define the methods that need to modify history. For those, we use &mut self:
+idx_ae0bf228
+fn add_to_history(&mut self, expression: String, result: f64) {
+self.history.push(CalculationResult {
+expression,
+result,
+});
+}
+fn evaluate(&mut self, expression: String) -> Result<f64, String> {
+let result = self.calculate_expression(&expression)?;
+self.add_to_history(expression, result);
+Ok(result)
+}
+}
+If we need to share access to history, we can create a dedicated type. This introduces lifetimes,
+which are Rust's way of tracking how long references remain valid. The following 'a lifetime
+parameter tells the compiler that HistoryView cannot outlive the data it references, thereby
+preventing dangling references:
+idx_bdab46dd
+struct HistoryView<'a> {
+entries: &'a [CalculationResult],
+}
+impl Calculator {
+fn create_history_view(&self) -> HistoryView<'_> {
+HistoryView {61
+Anti-Pattern: Using Clone and Rc Everywhere
+entries: &self.history,
+}
+}
+}
+Our goal was to create different APIs for different kinds of access, and we accomplished that
+neatly by creating a clear distinction where we have disentangled viewing methods and
+modifying methods. We also now have the ability to create a clean view-only type with
+HistoryView. In this version, it is clear when mutation can occur because of the method
+signatures, and we are also able to maintain compile-time guarantees about data access. The
+code now avoids runtime borrow checking overhead, and it's easier to understand and reason
+about.
+In the previous chapter, we saw many situations where trying to paper over ownership and
+borrowing issues didn't work at all. Throughout this chapter, we will be talking about
+something different: easy fixes that (mostly, kind of) work.
+You may ask, "If these techniques work, why not use them?"
+That is an excellent question! The tricks used to get around the borrow checker in this chapter
+depend on features that were added to Rust because they were needed. That means that using
+these features, in general, is not a mistake, but using them everywhere, even when they are not
+needed, is a mistake and can lead to issues ranging from inefficient, difficult-to-read code to
+code that doesn't work in very unpleasant ways.
+idx_0a9db8ce
+That is what makes the anti-patterns in this chapter the most common, the most persistent,
+and the most dangerous. They are common because they are easy. They are persistent because
+they very often appear to work (they do often work, but at a cost). They are dangerous because
+they build bad habits that will cause issues later, and they hide subtle bugs that the Rust
+compiler would normally prevent.
+In the next section, we will discuss one of these anti-patterns: cloning everything.
+Cloning everything
+In this section, we will explore another common anti-pattern: using clone() whenever there is
+an error or issue with ownership. Cloning in Rust creates a complete, independent copy of
+data. The Clone trait provides a clone() method that duplicates a value, allocating new
+memory and copying all contents. While cloning is exactly the tool to use in some situations,
+overusing it leads to inefficient code and can mask deeper design issues.
+idx_1c1cf313Chapter 3
+62
+The clone hammer
+When developers first encounter borrow checker errors, one of the most tempting solutions is
+to simply clone any data that causes conflicts. This is extremely common, to the extent that
+almost everyone (including me) did this at the start of their Rust journey. It is an easy way to
+make the compiler stop complaining, one that does not require careful thinking or refactoring,
+and it seems to work. Often, it does work to an extent.
+idx_ec98dcc0
+There is an old expression, "When what you have is a hammer, everything looks like a nail." When
+you use clone() as your hammer, every ownership problem looks like a nail to be hit with the
+clone() hammer.
+Let's see how this might manifest in our calculator. Suppose we want to add support for
+variables in our expressions. We will have to handle variables and maintain a working set of
+tokens during evaluation. The issue is that we will be sharing data in numerous places. The
+borrow checker may have something to say about that. Let's try to avoid that by using clone():
+#[derive(Clone)]
+struct Variable {
+name: String,
+value: f64,
+}
+#[derive(Clone)]
+enum Token {
+Number(f64),
+Variable(Variable),
+Operator(char),
+}
+struct Calculator {
+variables: HashMap<String, Variable>,
+}
+Notice #[derive(Clone)] on Variable and Token. This is our first warning. Clone is valuable
+and sometimes needed. That's why it's in the language. But when we begin deriving it on
+everything, we need to be suspicious.63
+Anti-Pattern: Using Clone and Rc Everywhere
+Now, we can implement the methods. We'll avoid borrowing issues by "judicious" use of
+clone():
+impl Calculator {
+fn tokenize(&self, expression: &str) -> Vec<Token> {
+let mut tokens = Vec::new();
+for part in expression.split_whitespace() {
+if let Some(var) = self.variables.get(part) {
+// Just clone it!
+tokens.push(Token::Variable(var.clone()));
+}
+// ... rest of tokenization
+}
+tokens
+}
+Calling clone() on each variable allows us to not worry about ownership at all. It gets us past
+the issue, for now.
+idx_0e12571b
+What about the evaluate method? Dealing with Vec<Token> could be annoying, but we have
+the clone() hammer:
+fn evaluate(&self, tokens: Vec<Token>) -> f64 {
+let mut working_tokens = tokens.clone();
+while working_tokens.len() > 1 {
+// Find next operator
+let op_pos = working_tokens.iter().position(|t| {
+matches!(t, Token::Operator(_))
+}).unwrap();
+let left = working_tokens[op_pos - 1].clone();
+let right = working_tokens[op_pos + 1].clone();
+let result = self.apply_operator(left, right);
+// Remove old tokens and insert result
+working_tokens.drain(op_pos-1..=op_pos+1);
+working_tokens.insert(op_pos-1, Token::Number(result));Chapter 3
+64
+}
+match working_tokens[0] {
+Token::Number(n) => n,
+_ => panic!("Invalid expression")
+}
+}
+}
+This code is riddled with unnecessary cloning: we clone variables when creating tokens, we
+clone the entire token vector before processing, and we clone individual tokens during
+evaluation.
+idx_4bcbaab4
+Each clone creates a new allocation and copies data, impacting performance, when we could
+be using references. But the performance impact isn't even the biggest problem. This excessive
+cloning is masking fundamental design issues, making our code more complex than necessary,
+which leads to an unclear and inefficient data flow.
+A better approach
+By thinking about data ownership and lifetimes, we can eliminate unnecessary cloning but
+keep the same functionality. Let's rework this:
+idx_a15c4870
+struct Variable {
+name: String,
+value: f64,
+}
+enum Token<'a> {
+Number(f64),
+Variable(&'a Variable),
+Operator(char),
+}
+Notice that Token now holds a reference to Variable instead of owning a clone. The 'a lifetime
+parameter ties the token's validity to the variable it references.
+idx_174de0f1
+The methods now work with references instead of clones:
+impl Calculator {
+fn tokenize<'a>(&'a self, expression: &str) -> Vec<Token<'a>> {
+let mut tokens = Vec::new();65
+Anti-Pattern: Using Clone and Rc Everywhere
+for part in expression.split_whitespace() {
+if let Some(var) = self.variables.get(part) {
+// Just use a reference
+tokens.push(Token::Variable(var));
+}
+// ... rest of tokenization
+}
+tokens
+}
+By using references, we eliminate the wasteful copying of each variable. The code looks almost
+the same, only without the clone. This works because now the Token struct is using references
+for variables, so there is no need to clone the data. We can store the variable reference directly.
+Now, let's look at evaluate. We were cloning the entire Vec<Token>. We can be much more
+efficient with references:
+idx_63f08f3e
+fn evaluate(&self, mut tokens: Vec<Token>) -> f64 {
+while tokens.len() > 1 {
+// Find next operator
+let op_pos = tokens.iter().position(|t| {
+matches!(t, Token::Operator(_))
+}).unwrap();
+// Calculate result using references
+let result = match (&tokens[op_pos-1], &tokens[op_pos+1]) {
+(Token::Number(n1), Token::Number(n2)) => {
+self.apply_operator(*n1, *n2)
+}
+(Token::Variable(v1), Token::Number(n2)) => {
+self.apply_operator(v1.value, *n2)
+}
+// ... other combinations
+_ => panic!("Invalid expression")
+};
+// Remove old tokens and insert result
+tokens.drain(op_pos-1..=op_pos+1);
+tokens.insert(op_pos-1, Token::Number(result));Chapter 3
+66
+}
+match tokens[0] {
+Token::Number(n) => n,
+_ => panic!("Invalid expression")
+}
+}
+}
+We've skipped cloning all of the tokens by taking references as needed.
+This version uses references where necessary to reduce needless copying. This makes
+ownership more obvious and results in code that is more effective and more understandable.
+We have seen that excessive cloning adds overhead and can produce messy code. But there is
+also a way that it can be dangerous. Earlier, we discussed interior mutability (which we will
+also discuss in the next section). As we said then, interior mutability allows changing values
+within a struct through an immutable reference. While sometimes it's the perfect tool for the
+job, overusing or misusing interior mutability could mean that data can change behind our
+backs.
+The Rust compiler is there to ensure that we are not doing anything dangerous. But what if we
+are using clone() everywhere to silence the borrow checker? Under normal circumstances,
+that will also work. But if the interior value is, for example, a mutably borrowed RefCell, Rust
+will protect us from data races and data corruption. Unfortunately, the way that it protects us
+is by panicking.
+idx_81a622da
+The most important realization is that cloning ought to be a conscious decision rather than an
+automatic reaction to borrow checker errors. It's usually an indication that you need to rethink
+your design when you find yourself reflexively reaching for clone().
+In the next section, we will be discussing Rust's smart pointers: Rc and RefCell. These tools are
+incredible when used carefully, but can lead to chaos when they are used without thought.
+Misusing Rc and RefCell (and friends)
+In this section, we will examine how developers often misuse types such as Rc and RefCell as a
+way to circumvent Rust's ownership rules. Smart pointers in Rust are data structures that act
+like pointers but provide additional functionality. Rc<T> enables shared ownership by tracking
+how many references exist to a value. RefCell<T> provides interior mutability, allowing you to
+mutate data even through an immutable reference, with borrowing rules enforced at runtime.
+Although there are valid applications for these types, using them as a panacea for ownership
+idx_ccc948c5
+idx_f5bf65dc67
+Anti-Pattern: Using Clone and Rc Everywhere
+issues results in code that is less efficient and more difficult to maintain. It also means that
+runtime reliability will be reduced.
+The siren song of smart pointers
+When battling the borrow checker, Rc and RefCell, as well as their thread-safe counterparts,
+Arc (Atomic Reference Counted) for shared ownership across threads and Mutex for thread-
+safe interior mutability, can be highly alluring tools. They appear to provide a way around
+Rust's stringent rules, enabling more open data sharing and modification.
+idx_002a8097
+idx_aee700b6
+Building on our calculator, let's suppose we want to parse expressions, store them for later
+evaluation, and maintain their results. So, the core evaluation logic now needs to handle a
+sequence of tokens, apply operators in the correct order, and properly handle variables and
+errors.
+We're keeping track of a lot of data! We are also accessing that data in many ways from many
+places. Rust can make that difficult. One way we could do this is to use reference counting and
+interior mutability to share this data throughout our program.
+Let's examine how we could use this in our calculator. Here's how someone might over-
+engineer this with smart pointers. Everything is wrapped in Rc<RefCell<...>>:
+struct Expression {
+tokens: Rc<RefCell<Vec<Token>>>,
+result: Rc<RefCell<Option<f64>>>,
+}
+struct Calculator {
+current_expression: Rc<RefCell<Option<Expression>>>,
+variables: Rc<RefCell<HashMap<String, f64>>>,
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+current_expression: Rc::new(RefCell::new(None)),
+variables: Rc::new(RefCell::new(HashMap::new())),
+}
+}
+As a result, the methods become cluttered with borrow() and borrow_mut() calls. RefCell
+trades the convenience of circumventing the borrow checker for the inconvenience of needingChapter 3
+68
+to explicitly request access to the value. These dynamic borrows suddenly show up
+everywhere:
+idx_afaa9f77
+fn set_expression(&self, expr: &str) {
+let tokens = self.tokenize(expr);
+*self.current_expression.borrow_mut() = Some(Expression {
+tokens: Rc::new(RefCell::new(tokens)),
+result: Rc::new(RefCell::new(None)),
+});
+}
+fn evaluate(&self) -> Result<f64, String> {
+let expr = self.current_expression.borrow();
+let expr = expr.as_ref().ok_or("No expression set")?;
+let mut tokens = expr.tokens.borrow_mut();
+let vars = self.variables.borrow();
+// Process tokens...
+let result = self.process_tokens(&mut tokens, &vars)?;
+*expr.result.borrow_mut() = Some(result);
+Ok(result)
+}
+Now, set_expression and evaluate need to be able to modify the state of tokens and result.
+Because of interior mutability, we can take &self in each of these methods, but then use
+borrow() and borrow_mut() to dynamically borrow these values. This allows set_expression
+to modify the token Vec and evaluate to update the results without needing to deal with the
+borrow checker.
+The actual processing of the tokens uses the borrowed reference from borrow_mut(), which
+means that the processing code has clean reference semantics and never deals with our
+Rc<RefCell<>> values. It also means that, for the purpose of discussing interior mutability, the
+token processing itself isn't very interesting.
+idx_6d79e685
+So, we can create a fake process_tokens for the purpose of this example, since what it is doing
+doesn't deal with interior mutability:
+fn process_tokens(
+&self,69
+Anti-Pattern: Using Clone and Rc Everywhere
+tokens: &mut Vec<Token>,
+variables: &HashMap<String, f64>
+) -> Result<f64, String> {
+// Implementation
+Ok(42.0)
+}
+}
+This code has several serious issues. The most evident is that it is more difficult to read and
+also more verbose, which creates hiding places for bugs. Beyond that, we are trading compiler
+guarantees of safety and correctness for manually managing lifetimes, possibly leading to
+runtime panics or reference cycles. The lack of clarity makes it more difficult to understand
+data flow and ownership semantics. Finally, there is an inherent cost to reference counting,
+which doesn't matter as much here, but could very much matter in time- or resource-critical
+code.
+Simpler is better
+We can address these issues without resorting to unnecessary smart pointers. By thinking
+about ownership and data flow upfront, we can create a design that's both more efficient and
+easier to reason about.
+idx_7fcec907
+Let's rewrite our calculator to handle the same requirements without misusing smart pointers.
+In this redesign, data flows in one direction: expressions come in as strings, get parsed into
+tokens, then evaluated to produce results that get stored in history. Each step produces output
+that the next step consumes. Calculator owns its variables and history directly, so no shared
+ownership is needed.
+Here's the cleaner approach with direct ownership. We start by defining our core types:
+idx_efd569f5
+#[derive(Debug)]
+enum Token {
+Number(f64),
+Variable(String),
+Operator(char),
+}
+struct ParsedExpression {
+tokens: Vec<Token>,
+}
+struct Calculation {Chapter 3
+70
+expression: String,
+tokens: Vec<Token>,
+result: f64,
+}
+struct Calculator {
+variables: HashMap<String, f64>,
+history: Vec<Calculation>,
+}
+The Token enum now stores variable names as String types rather than using Rc.
+ParsedExpression holds the tokenized form, and Calculation stores the complete record of
+each evaluation.
+Now, we can start implementing the new interface. We'll create methods that distinguish
+operations that need to mutate data and operations that only need to read it. We can begin
+with our new, RefCell-free constructor:
+impl Calculator {
+fn new() -> Self {
+Self {
+variables: HashMap::new(),
+history: Vec::new(),
+}
+}
+The parse method tokenizes the expression:
+fn parse(&self, expr: &str) -> Result<ParsedExpression, String> {
+let tokens = self.tokenize(expr)?;
+Ok(ParsedExpression { tokens })
+}
+The evaluate_parsed method processes the tokens and stores the result in the calculator's
+history:
+idx_cef34f2e
+fn evaluate_parsed(&mut self, expr: String, parsed: ParsedExpression) ->
+Result<f64, String> {
+let result = self.evaluate_tokens(parsed.tokens.clone())?;
+self.history.push(Calculation {
+idx_c6ec882f71
+Anti-Pattern: Using Clone and Rc Everywhere
+expression: expr,
+tokens: parsed.tokens,
+result,
+});
+Ok(result)
+}
+In each of these methods, we ask for the kind of reference we need, mutable or immutable, and
+then have clean, compiler-verified access to the data.
+Because we have unambiguous access patterns, we can also create convenience methods that
+follow this pattern. For example, we can add a wrapper that combines parsing and evaluation:
+fn evaluate(&mut self, expr: String) -> Result<f64, String> {
+let parsed = self.parse(&expr)?;
+self.evaluate_parsed(expr, parsed)
+}
+The remaining methods provide access to history and variables:
+idx_9dcd42d9
+idx_3225f1d0
+fn history(&self) -> &[Calculation] {
+&self.history
+}
+fn last_result(&self) -> Option<f64> {
+self.history.last().map(|calc| calc.result)
+}
+fn set_variable(&mut self, name: String, value: f64) {
+self.variables.insert(name, value);
+}
+fn get_variable(&self, name: &str) -> Option<f64> {
+self.variables.get(name).copied()
+}
+}
+The Calculator implementation uses direct ownership throughout. Methods that read data
+take &self, while methods that modify state take &mut self. There are no RefCells, no
+runtime borrow checks, and no potential panics from borrowing conflicts.
+idx_1144dd68
+idx_e2bd4cfaChapter 3
+72
+When we genuinely need thread-safe access to our calculator, we can add it through a
+dedicated wrapper type rather than complicating our core logic. This keeps thread-safety
+concerns separate from our main implementation. If we need to share the calculator between
+threads, we can wrap it in proper synchronization:
+use std::sync::{Arc, Mutex};
+struct ThreadSafeCalculator {
+inner: Arc<Mutex<Calculator>>,
+}
+impl ThreadSafeCalculator {
+fn new() -> Self {
+Self {
+inner: Arc::new(Mutex::new(Calculator::new())),
+}
+}
+fn evaluate(&self, expr: String) -> Result<f64, String> {
+let mut calc = self.inner.lock().map_err(|_| "Lock poisoned")?;
+calc.evaluate(expr)
+}
+// Other methods following the same pattern...
+}
+impl Clone for ThreadSafeCalculator {
+fn clone(&self) -> Self {
+Self {
+inner: Arc::clone(&self.inner),
+}
+}
+}
+This revised version offers several improvements:
+idx_541787f9
+idx_3d5a2b03
+•Clear ownership semantics: Each component owns its data directly, with no
+unnecessary indirection
+•Explicit state management: The Calculation struct keeps related data together, and
+the history is clearly owned by the calculator73
+Anti-Pattern: Using Clone and Rc Everywhere
+•Better error handling: We use Result types to handle errors explicitly rather than
+risking runtime panics
+•Thread-safety when needed: Instead of sprinkling Rc and RefCell throughout the
+code, we provide a separate thread-safe wrapper when concurrent access is required
+•Simpler mental model: We can reason about data flow more easily because ownership
+and mutation are explicit
+•Better performance: We avoid the overhead of reference counting and runtime
+borrowing checks in the common case
+Here's how we might use this API. We'll set up some variables, do some calculations, and then
+look at the history. We'll also try out the thread-safe wrapper:
+fn main() -> Result<(), String> {
+let mut calc = Calculator::new();
+calc.set_variable("pi".to_string(), 3.14159);
+let result1 = calc.evaluate("2 * pi".to_string())?;
+let result2 = calc.evaluate("result + 1".to_string())?;
+for calculation in calc.history() {
+println!("{} = {}", calculation.expression, calculation.result);
+}
+let thread_safe = ThreadSafeCalculator::new();
+let threads: Vec<_> = (0..3)
+.map(|i| {
+let calc = thread_safe.clone();
+std::thread::spawn(move || {
+calc.evaluate(format!("{} + 1", i))
+})
+})
+.collect();
+Ok(())
+}Chapter 3
+74
+This design achieves everything the original version attempted but does so with proper Rust
+idioms. When we do need shared access or thread-safety, we add it at the appropriate level of
+abstraction rather than complicating the core logic with unnecessary smart pointers.
+When to use smart pointers
+Smart pointers such as Rc and RefCell do have legitimate uses:
+idx_a678ebf7
+•
+Rc is appropriate for shared ownership in single-threaded contexts where the sharing
+idx_8da3797b
+is part of the fundamental design (such as in certain graph structures).
+•
+RefCell is useful for implementing interior mutability patterns where mutability is
+idx_d4d22609
+truly needed behind an immutable reference. The client doesn't need an owned value
+or mutable reference to use an interface that allows mutation.
+•
+Arc and Mutex (and also RwLock) are variants of these building blocks for thread-safe
+and async programming.
+idx_ab2ee09d
+idx_1f9cfe33
+Smart pointers are amazing, but they shouldn't be used just to avoid thinking about
+ownership. While we've focused on avoiding the misuse of Rc and RefCell, it's important to
+understand when they are appropriate. Before reaching for Rc or RefCell, ask yourself the
+following:
+idx_fc1c8fd5
+•Is shared ownership actually required by the design, or am I just trying to avoid
+thinking about ownership?
+•Do I really need interior mutability, or can I restructure my code to use normal
+borrowing rules?
+•Could this be solved with simpler lifetime annotations or ownership patterns?
+Smart pointers are powerful tools! They can be amazing allies when used in the correct
+circumstances, when they are necessary and helpful. But when they don't really fit, we can
+create clear, idiomatic, and effective code without them.
+Summary
+In this chapter, we explored three common anti-patterns in Rust. We talked about how it is
+tempting to avoid thinking about ownership concerns, and we saw the importance of working
+with Rust's ownership system rather than against it. Then, we discussed the very common
+issue of overusing clone and why it is often a sign of design issues. Finally, we discussed the
+equally common practice of misusing smart pointers such as Rc and RefCell, and we
+discussed how to know when smart pointers are appropriate and when they're being misused.
+We also examined how our calculator project could be implemented using these anti-patterns,
+and then showed how to refactor it to use more idiomatic Rust patterns.75
+Anti-Pattern: Using Clone and Rc Everywhere
+In the next chapter, we'll explore a related but distinct anti-pattern: fighting with the borrow
+checker. While this chapter focused on techniques that circumvent ownership rules, the next
+chapter examines what happens when developers try to outsmart the borrow checker through
+unsafe code and other workarounds.

@@ -1,0 +1,1450 @@
+Behavioral Patterns 1: Taking
+Action
+In this chapter, we'll explore the first set of behavioral design patterns in Rust and how they
+can enhance our calculator with better interaction models and operation handling. Behavioral
+patterns focus on algorithms and the assignment of responsibilities between objects. They
+describe patterns of objects and types, and the patterns of communication between them.
+We'll continue developing our Correct Calculator project, building on the structural
+foundation established in the previous chapter. While the structural patterns helped us
+organize our calculator's components, behavioral patterns will help us define how these
+components interact and communicate. We'll see how patterns such as Command and
+Strategy can transform our static calculator into a dynamic, interactive application with
+advanced features such as undo/redo functionality.
+First, we'll examine the Command pattern, which allows us to encapsulate operations as
+objects, making it possible to parameterize clients with different requests and support
+undoable operations. This will give our calculator the ability to track calculation history and
+undo previous operations. Then, we'll explore the Chain of Responsibility pattern, which helps
+us process different types of input in a flexible way.
+Next, we'll look at the Strategy pattern, which enables us to define a family of algorithms,
+encapsulate each one, and make them interchangeable. This will allow our calculator to
+support different evaluation strategies for expressions. We'll also study the Mediator pattern,
+which promotes loose coupling by keeping objects from referring to each other explicitly.
+Finally, we'll examine the Template Method pattern, which defines the skeleton of an
+algorithm while letting subclasses redefine certain steps.Chapter 7
+188
+Throughout the chapter, we'll see how these patterns can be implemented in Rust, taking
+advantage of the language's trait system, ownership model, and type safety. We'll also see how
+these behavioral patterns can work seamlessly with the structural patterns we explored in the
+previous chapter, particularly the Composite pattern for expression trees.
+In this chapter, we're going to cover the following main topics:
+•Command pattern: encapsulating operations
+•Chain of Responsibility: flexible input processing
+•Strategy pattern: swappable algorithms
+•Mediator pattern: coordinating components
+•Template Method: structured algorithm variations
+Technical requirements
+The source code for the exercises can be found on GitHub at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust. The repository is
+organized by chapter. The relevant exercises for this chapter are at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust/tree/main/ch7.
+Command pattern: encapsulating operations
+The Command pattern, as traditionally defined, transforms operations into objects, enabling
+us to store, pass, and manipulate operations just like any other data. By encapsulating
+operations as first-class objects, we gain powerful capabilities, including operation history,
+undo/redo functionality, command queuing, and operation logging. This pattern is
+fundamental to building interactive applications where users expect to be able to reverse their
+actions.
+idx_7237e2fe
+In Rust, we don't have objects, but the pattern is quite useful regardless. Let's see how we can
+realize it in Rust, and how it helps our implementation.
+The need for operation management
+As our calculator evolves beyond simple expression evaluation, users expect sophisticated
+operation management. They want to set variables, clear the calculator state, and most
+importantly, undo or redo operations. Managing these diverse operations consistently
+becomes challenging, especially when tracking and potentially reversing them.
+idx_83134bbd189
+Behavioral Patterns 1: Taking Action
+Consider what happens when a user sets a variable in a simple implementation:
+fn set_variable(&mut self, name: &str, value: f64) {
+self.variables.insert(name.to_string(), value);
+}
+This works, but what if the user wants to undo? We'd need to know the previous value, if any.
+Without proper encapsulation, undo logic becomes scattered throughout the code base. The
+Command pattern offers a solution by encapsulating each operation as an entity that knows
+how to execute that operation, undo it if needed, and describe itself for history display.
+We'll implement this pattern in three parts: defining a command interface that all operations
+implement, creating concrete commands for different calculator operations, and building a
+command processor that manages execution and history.
+Designing the command interface
+In Rust, we define the Command pattern through a trait rather than an abstract class as we
+would in an object-oriented language. This trait establishes the contract that each command
+must follow:
+idx_2da49484
+pub trait Command {
+fn execute(&mut self, calculator: &mut Calculator) -> Result<Option<f64>,
+String>;
+fn undo(&self, calculator: &mut Calculator) -> Result<(), String>;
+fn description(&self) -> String;
+}
+The execute method takes &mut self because commands need to record state for undo – for
+instance, saving the previous value before overwriting it. The undo method only needs &self
+since it reads the saved state without modifying the command. The description method
+provides a human-readable representation for history display.
+Unlike object-oriented implementations where commands might store receiver references,
+Rust's ownership model leads us to a different design: commands receive the calculator by
+mutable reference rather than owning it. This avoids circular dependencies and lifetime
+complexity. The borrow checker ensures that only one command can access the calculator at a
+time, preventing the subtle bugs that arise when multiple commands hold references to shared
+state.Chapter 7
+190
+The Calculator struct stores the state that commands operate on:
+pub struct Calculator {
+pub variables: HashMap<String, f64>,
+pub history: Vec<Calculation>,
+pub last_result: Option<f64>,
+}
+Calculator maintains three key pieces of state that commands manipulate. The variables
+HashMap stores user-defined values, history tracks all calculations for review, and
+last_result holds the most recent computation. Commands receive mutable access to this
+entire state, enabling them to modify any aspect while the borrow checker ensures safety.
+idx_eda4cbcd
+Implementing concrete commands
+Now let's implement specific commands. First, we'll define a command to evaluate expressions
+using the Expression type that we defined in the previous chapter:
+idx_53d58602
+pub struct EvaluateCommand {
+expression: String,
+expr_tree: Box<dyn Expression>,
+previous_result: Option<f64>,
+}
+EvaluateCommand stores both the original expression string for display and the parsed
+expression tree from our Composite pattern. It also maintains the previous result to enable
+proper undo behavior.
+For this command, the execute implementation saves state before computing, while undo
+restores it:
+impl Command for EvaluateCommand {
+fn execute(&mut self, calculator: &mut Calculator) -> Result<Option<f64>,
+String> {
+self.previous_result = calculator.last_result;
+let result = self.expr_tree.evaluate(&calculator.variables)?;
+calculator.store_calculation(self.expression.clone(), result);
+Ok(Some(result))
+}
+fn undo(&self, calculator: &mut Calculator) -> Result<(), String> {191
+Behavioral Patterns 1: Taking Action
+calculator.last_result = self.previous_result;
+calculator.history.pop();
+Ok(())
+}
+fn description(&self) -> String {
+format!("Evaluate: {}", self.expression)
+}
+}
+Notice how EvaluateCommand uses our expression tree from the previous chapter,
+demonstrating how the Command pattern builds on the Composite pattern. The execute
+method saves the previous result before computing the new one, enabling undo to restore the
+original state. The ? operator on evaluate propagates any evaluation errors cleanly. If the
+expression contains a division by zero, the error returns without modifying the calculator state.
+Let's implement a command for setting variables:
+idx_33a41aab
+pub struct SetVariableCommand {
+name: String,
+value: f64,
+previous_value: Option<f64>,
+}
+impl Command for SetVariableCommand {
+fn execute(&mut self, calculator: &mut Calculator) -> Result<Option<f64>,
+String> {
+self.previous_value = calculator.get_variable(&self.name);
+calculator.set_variable(&self.name, self.value);
+Ok(None)
+}
+fn undo(&self, calculator: &mut Calculator) -> Result<(), String> {
+match self.previous_value {
+Some(value) => calculator.set_variable(&self.name, value),
+None => { calculator.variables.remove(&self.name); }
+}
+Ok(())
+}
+fn description(&self) -> String {Chapter 7
+192
+format!("Set {} = {}", self.name, self.value)
+}
+}
+SetVariableCommand returns None from execute since variable assignments don't produce
+display values. The undo implementation either restores the saved value or removes the
+variable if it didn't exist before. This is a subtle but important distinction that ensures undo
+truly reverses the operation.
+idx_c71abf0b
+Managing commands with a command processor
+CommandProcessor maintains execution history and handles undo/redo operations:
+idx_c11999ae
+pub struct CommandProcessor {
+calculator: Calculator,
+history: Vec<Box<dyn Command>>,
+undo_stack: Vec<Box<dyn Command>>,
+}
+CommandProcessor serves as the command management hub, maintaining both execution
+history and a separate undo stack. Using Box<dyn Command> lets us store heterogeneous
+commands, including EvaluateCommand and SetVariableCommand, in the same Vec. Rust's trait
+object system provides runtime polymorphism here: each boxed command dispatches to its
+own execute and undo implementations through a vtable, while the processor treats them
+uniformly.
+The execute method runs a command and records it in history:
+idx_c766cac0
+impl CommandProcessor {
+pub fn execute(&mut self, mut command: Box<dyn Command>)
+-> Result<Option<f64>, String>
+{
+let result = command.execute(&mut self.calculator)?;
+self.history.push(command);
+self.undo_stack.clear();
+Ok(result)
+}
+}
+Note how executing a new command clears the undo stack. This prevents confusing states
+where redoing after new actions would create timeline inconsistencies. The mut command193
+Behavioral Patterns 1: Taking Action
+parameter takes ownership of the command, moving it into the history Vec. Rust's ownership
+transfer here is natural: once a command executes, the processor owns it for potential undo.
+The undo and redo methods move commands between the two stacks:
+impl CommandProcessor {
+pub fn undo(&mut self) -> Result<(), String> {
+if let Some(command) = self.history.pop() {
+command.undo(&mut self.calculator)?;
+self.undo_stack.push(command);
+Ok(())
+} else {
+Err("Nothing to undo".to_string())
+}
+}
+pub fn redo(&mut self) -> Result<(), String> {
+if let Some(mut command) = self.undo_stack.pop() {
+command.execute(&mut self.calculator)?;
+self.history.push(command);
+Ok(())
+} else {
+Err("Nothing to redo".to_string())
+}
+}
+When we undo, the command moves from history to the undo stack, making it available for
+redo. When we redo, it moves back. This dual-stack approach gives us full undo/redo with no
+additional bookkeeping. Each command carries its own saved state, so multiple undos work
+correctly regardless of the command types involved.
+idx_1f655539
+Using commands in the calculator interface
+Let's see how these components work together in the calculator's input processing:
+idx_60b4dc53
+pub fn process_input(&mut self, input: &str) -> Result<String, String> {
+match input.trim() {
+"undo" => {
+self.command_processor.undo()?;
+Ok("Operation undone".to_string())
+}
+"redo" => {Chapter 7
+194
+self.command_processor.redo()?;
+Ok("Operation redone".to_string())
+}
+_ => {
+let expr_tree = self.parser.parse(input)?;
+let result = self.command_processor.execute(
+Box::new(EvaluateCommand::new(input.to_string(),
+expr_tree))
+)?;
+if let Some(value) = result {
+Ok(format!("{}", value))
+} else {
+Err("Failed to evaluate expression".to_string())
+}
+}
+}
+}
+This implementation showcases several Rust idioms: pattern matching for clean command
+dispatch, Result types for error propagation, and the ? operator to elegantly handle errors
+while keeping the happy path clear. The pattern extends naturally to composite commands
+(executing multiple operations as a group), parameterized commands, and macro recording,
+all following the same trait-based foundation.
+idx_b0755b52
+When to use the Command pattern
+The Command pattern fits scenarios where you need undo/redo functionality, operation
+queuing, or macro recording. It's appropriate when you want to parameterize objects with
+operations, queue operations for later execution, or support logging of operations for
+debugging or audit trails.
+idx_2f04f9e9
+In our calculator, commands have given us a clean way to track operation history and provide
+undo/redo, making our calculator feel more usable (and more forgiving of mistakes).
+In the next section, we'll explore the Chain of Responsibility pattern, which helps us process
+inputs in a more flexible and extensible way, building on the command infrastructure we've
+established here.
+Chain of Responsibility: flexible input processing
+The Chain of Responsibility pattern allows us to process requests through a series of handlers,
+with each handler deciding either to process the request or to pass it to the next handler in the
+idx_61fd5629195
+Behavioral Patterns 1: Taking Action
+chain. This pattern decouples senders from receivers, giving multiple objects the opportunity
+to handle a request without the sender knowing which object will ultimately process it.
+The challenge of input processing
+Our calculator processes diverse input types: special commands such as /undo or /history
+that control calculator state, variable assignments such as x = 5 or result = 2 + 3 that store
+values, and mathematical expressions ranging from simple arithmetic to complex nested
+calculations. Each input type requires distinct processing logic.
+idx_5ae80481
+Without a proper pattern, we'd handle all input types with a monolithic conditional block:
+fn process_input(&mut self, input: &str) -> Result<Option<f64>, String> {
+if input.starts_with("/") {
+// Handle commands...
+} else if input.contains("=") {
+// Handle variable assignments...
+} else {
+// Try to parse as expression...
+}
+}
+This approach quickly becomes unmaintainable as we add features such as function
+definitions, mode switches, or macro expansion. Each addition requires modifying the central
+processing logic, risking bugs and making the code increasingly complex.
+The Chain of Responsibility pattern solves this by creating a pipeline of specialized handlers.
+We'll first define a common interface that allows handlers to either process input or decline it.
+Then we'll implement concrete handlers for commands, variables, and expressions, and build a
+chain that tries each handler in order. This approach makes our input processing both
+extensible and maintainable. New input types simply require new handlers added to the chain.
+idx_5dbf1688
+Designing the handler interface
+The key design decision is how handlers signal whether they can process a given input. Each
+handler needs to either return a result (if it handled the input) or indicate that the next handler
+should try. We express this with a return type of Option<Result<Option<f64>, String>>:
+idx_c698dc73
+pub trait InputHandler {
+fn try_handle(
+&self,
+input: &str,
+processor: &mut CommandProcessor,Chapter 7
+196
+) -> Option<Result<Option<f64>, String>>;
+}
+A handler returns Some(Ok(...)) when it successfully processes the input, Some(Err(...))
+when it recognizes the input but encounters an error, or None when the input isn't its
+responsibility. This three-way signaling (handled, failed, or declined) gives each handler clean
+semantics without needing to know about other handlers in the chain.
+The Option<Result<...>> nesting may look complex, but it separates two distinct concerns:
+Option represents "can I handle this?" while Result represents "did the handling succeed?"
+Rust's type system enforces both decisions explicitly, preventing the kind of silent failures that
+occur when a handler accidentally swallows input it doesn't understand.
+With the handler trait defined, we need a structure to hold and iterate through our handlers:
+pub struct InputChain {
+handlers: Vec<Box<dyn InputHandler>>,
+}
+The InputChain struct stores handlers as trait objects in a Vec, giving us ordered processing
+with runtime flexibility. In object-oriented languages, each handler typically stores a reference
+to its successor, forming a linked list. In our Rust implementation, a Vec avoids the ownership
+complexity of handlers needing to own or reference other handlers. Each handler is
+independent; the chain manages the sequence.
+The chain's process method iterates through handlers until one claims the input:
+idx_5812b2c5
+impl InputChain {
+pub fn new(handlers: Vec<Box<dyn InputHandler>>) -> Self {
+Self { handlers }
+}
+pub fn process(
+&self,
+input: &str,
+processor: &mut CommandProcessor,
+) -> Result<Option<f64>, String> {
+for handler in &self.handlers {
+if let Some(result) = handler.try_handle(input, processor) {
+return result;
+}197
+Behavioral Patterns 1: Taking Action
+}
+Err(format!("Unrecognized input: {}", input))
+}
+}
+The for loop tries each handler in order. When a handler returns Some, the chain returns that
+result immediately, whether success or error. If no handler claims the input, the chain returns
+an error. This simple iteration replaces the recursive delegation of traditional linked-list
+implementations, making the flow easy to trace in a debugger.
+idx_7fc4e9ea
+Implementing concrete handlers
+Now let's implement handlers for each input type. Each handler focuses on recognizing and
+processing one category of input.
+idx_e0968cc2
+The command handler checks for inputs starting with / and processes special commands:
+pub struct CommandHandler;
+impl InputHandler for CommandHandler {
+fn try_handle(
+&self,
+input: &str,
+processor: &mut CommandProcessor,
+) -> Option<Result<Option<f64>, String>> {
+let trimmed = input.trim();
+if !trimmed.starts_with("/") {
+return None;
+}
+Some(match &trimmed[1..] {
+"undo" => processor.undo().map(|_| None),
+"redo" => processor.redo().map(|_| None),
+"history" => {
+for (i, desc) in processor.history()
+.iter().enumerate()
+{
+println!("{}: {}", i + 1, desc);
+}
+Ok(None)
+}
+"clear" => {
+let cmd = ClearVariablesCommand::new();Chapter 7
+198
+processor.execute(Box::new(cmd))
+}
+_ => Err(format!("Unknown command: {}", trimmed)),
+})
+}
+}
+The early return None for non-command input means the handler immediately declines, and
+the chain moves to the next handler. The /undo and /redo commands delegate directly to
+CommandProcessor, while /clear creates ClearVariablesCommand and executes it through the
+processor, which integrates Chain of Responsibility with the Command pattern from the
+previous section. Unrecognized commands starting with / produce an error rather than
+passing through, since /foo clearly isn't a variable assignment or expression.
+The variable assignment handler looks for the = character. Unlike CommandHandler, it holds a
+parser for evaluating the assigned value, and it creates SetVariableCommand to execute
+through the processor:
+idx_4067e92b
+pub struct VariableAssignmentHandler {
+parser: ExpressionParser,
+}
+impl InputHandler for VariableAssignmentHandler {
+fn try_handle(
+&self,
+input: &str,
+processor: &mut CommandProcessor,
+) -> Option<Result<Option<f64>, String>> {
+let (name, value_str) = input.split_once('=')?;
+let name = name.trim();
+let value_str = value_str.trim();
+let expr = match self.parser.parse(value_str) {
+Ok(e) => e,
+Err(e) => return Some(Err(e)),
+};
+let vars = &processor.get_calculator().variables;
+let value = match expr.evaluate(vars) {
+Ok(v) => v,
+Err(e) => return Some(Err(e)),199
+Behavioral Patterns 1: Taking Action
+};
+let cmd = SetVariableCommand::new(
+name.to_string(), value
+);
+Some(processor.execute(Box::new(cmd)))
+}
+}
+The ? operator on split_once returns None from try_handle, declining cleanly if there's no =
+in the input. For valid assignments, the handler parses the value expression, evaluates it using
+the current variables, and creates SetVariableCommand to execute through the processor. This
+integration with the Command pattern means variable assignments automatically become
+part of the undo/redo history, so that undoing a variable assignment restores the previous
+value.
+idx_440d1d10
+Finally, the expression handler serves as the chain's catch-all. It parses input into an
+expression tree and wraps it in EvaluateCommand:
+pub struct ExpressionHandler {
+parser: ExpressionParser,
+}
+impl InputHandler for ExpressionHandler {
+fn try_handle(
+&self,
+input: &str,
+processor: &mut CommandProcessor,
+) -> Option<Result<Option<f64>, String>> {
+let input = input.trim();
+let result = self.parser.parse(input)
+.and_then(|expr| {
+let cmd = EvaluateCommand::new(
+input.to_string(), expr
+);
+processor.execute(Box::new(cmd))
+});
+Some(result)
+}
+}Chapter 7
+200
+ExpressionHandler always returns Some. As the last handler in the chain, it never declines. It
+parses the input, wraps it in EvaluateCommand, and executes it through the processor. Like
+variable assignments, expression evaluations become part of the command history, supporting
+undo/redo. The chain's fallback "Unrecognized input" error only triggers if the chain is empty.
+idx_e30c866e
+Building the chain
+With handlers implemented, assembling the chain is straightforward:
+idx_b5349c09
+pub fn create_input_chain(parser: ExpressionParser) -> InputChain {
+InputChain::new(vec![
+Box::new(CommandHandler),
+Box::new(VariableAssignmentHandler::new(parser.clone())),
+Box::new(ExpressionHandler::new(parser)),
+])
+}
+Handler order matters: commands get first priority (so /undo works even if undo could be
+parsed as a variable name), then variable assignments, then expression evaluation. Reordering
+handlers would change precedence. For example, placing the expression handler first would
+cause x = 5 to fail as an expression before the variable handler could claim it.
+Adding the chain to our calculator's main loop is simple:
+let chain = create_input_chain(parser);
+loop {
+let input = read_user_input();
+match chain.process(&input, &mut processor) {
+Ok(Some(result)) => println!("= {}", result),
+Ok(None) => {},
+Err(error) => println!("Error: {}", error),
+}
+}
+The three-way match mirrors our handler return type: a result to display, a command that
+produced no visible output, or an error. The chain handles all the routing internally, and every
+operation flows through CommandProcessor, maintaining a consistent undo/redo history.
+idx_2320b698201
+Behavioral Patterns 1: Taking Action
+Extending the chain
+Adding new input types demonstrates the pattern's extensibility. A function definition handler
+can recognize patterns such as f(x) = x^2 + 1:
+idx_15d5bbea
+pub struct FunctionDefinitionHandler;
+impl InputHandler for FunctionDefinitionHandler {
+fn try_handle(
+&self,
+input: &str,
+processor: &mut CommandProcessor,
+) -> Option<Result<Option<f64>, String>> {
+let captures = FUNCTION_DEF_REGEX.captures(input)?;
+let name = captures.get(1)?.as_str();
+let param = captures.get(2)?.as_str();
+let body = captures.get(3)?.as_str();
+Some(processor.define_function(name, param, body))
+}
+}
+The ? operator on the regex captures returns None if the input doesn't match the function
+definition pattern, in order to decline cleanly.
+To integrate this handler, we insert it at the appropriate position in our Vec:
+InputChain::new(vec![
+Box::new(CommandHandler),
+Box::new(FunctionDefinitionHandler),
+Box::new(VariableAssignmentHandler::new(parser.clone())),
+Box::new(ExpressionHandler::new(parser)),
+])
+The function handler goes before variable assignment because f(x) = x + 1 contains =, and it
+would otherwise be claimed by the variable handler. No existing handler needed modification.
+We simply inserted a new one at the right position.
+This extensibility illustrates an important difference from the naive conditional approach.
+Adding a handler to a Vec doesn't risk breaking existing handlers. Each handler is an
+idx_c4728b82Chapter 7
+202
+independent unit that can be tested in isolation: we can verify that CommandHandler correctly
+declines 2 + 3 without involving any other handler.
+When to use the Chain of Responsibility pattern
+The Chain of Responsibility pattern is particularly useful when multiple objects can handle a
+request, but the handler isn't known in advance; when you want to issue a request to one of
+several objects without specifying the receiver explicitly; or when the set of handlers can be
+configured dynamically.
+idx_9bfe4eae
+In our calculator, the Chain of Responsibility pattern has given us a clean, flexible way to
+handle different input types. The pattern makes our code more maintainable. Adding new
+input types means adding new handlers rather than modifying existing code.
+In the next section, we'll explore the Strategy pattern, which allows us to define a family of
+algorithms and make them interchangeable within our calculator.
+Strategy pattern: swappable algorithms
+The Strategy pattern allows us to define a family of algorithms, encapsulate each one as a
+separate type, and make them interchangeable. This pattern enables the algorithm to vary
+independently from the clients that use it, providing a flexible alternative to subclassing for
+extending behavior.
+idx_11ea38f3
+The challenge of multiple evaluation approaches
+Our calculator needs to handle various evaluation scenarios. Simple expressions require basic
+arithmetic, while complex expressions involve variables, functions, and nested operations.
+Some users want optimized evaluation that simplifies expressions before computing, while
+others need safe evaluation that validates expressions to catch potential errors such as division
+by zero.
+idx_d1e7d32e
+The naive approach would use conditional logic in the evaluate method:
+fn evaluate(&self, expr: &dyn Expression) -> Result<f64, String> {
+match self.mode {
+Mode::Standard => self.evaluate_standard(expr),
+Mode::Optimizing => self.optimize_then_evaluate(expr),
+Mode::Safe => self.validate_then_evaluate(expr),
+}
+}
+This approach has problems. Adding a new evaluation mode requires modifying this central
+method, violating the open/closed principle. The mode logic becomes tangled with the203
+Behavioral Patterns 1: Taking Action
+calculator's core responsibilities. Testing individual evaluation approaches requires setting up
+the entire calculator.
+Note
+What exactly is this open/closed principle?
+The open/closed principle is one of the SOLID design principles. Bertrand Meyer
+originally formulated it in 1988, but it became much more popular when Robert C.
+Martin included it in his SOLID principles. What it means is that you should be able to
+extend a system's capabilities without modifying its existing code. What makes it
+worth paying attention to is that it minimizes the ripple effect of changes: if extending
+the system doesn't require changing existing code, you don't need to worry about new
+additions destabilizing everything else. It is open to extension, but closed to change.
+idx_2f3a4b39
+The Strategy pattern solves this by extracting each algorithm into its own type. The calculator
+delegates evaluation to whatever strategy is currently active, and strategies can be swapped at
+runtime without changing the calculator code.
+idx_84f3221c
+Designing the strategy interface
+In Rust, we define the strategy interface as a trait. This trait establishes the contract that all
+evaluation strategies must fulfill: they receive an expression and a variable context, and they
+return either a computed value or an error:
+idx_1f050295
+pub trait EvaluationStrategy {
+fn evaluate(
+&self,
+expr: &dyn Expression,
+variables:&HashMap<String, f64>
+)-> Result<f64, String>;
+fn name(&self)-> &str;
+fn description(&self)-> &str;
+}
+The evaluate method is the core algorithm that each strategy implements differently. The
+name and description methods support user feedback when switching modes. The calculator
+can display "Switched to: Safe (Performs validation checks before evaluation)".
+Unlike object-oriented languages where strategies might inherit from an abstract class, Rust's
+trait approach focuses on defining a contract, not creating an inheritance relationship. TheChapter 7
+204
+trait also integrates naturally with Rust's ownership model: strategies receive references to
+expressions and variables rather than taking ownership, allowing the same expression to be
+evaluated multiple times with different strategies.
+Our strategy trait accepts an already-parsed expression tree rather than a raw string. This
+separates the concern of parsing from the concern of evaluation. Strategies focus purely on
+how to evaluate, not on how to parse. The code repository takes the alternative approach,
+where each strategy handles both parsing and evaluation. Either design works; I chose to
+separate them here because the Template Method pattern section later in this chapter addresses
+parsing strategies independently.
+idx_327a5b9b
+Implementing concrete strategies
+With our interface defined, we implement three concrete strategies. Each encapsulates a
+different evaluation approach.
+Standard evaluation
+The standard strategy delegates directly to the expression tree's evaluate method. This is our
+baseline implementation with no additional processing. Let's define it:
+idx_0c1fcde9
+pub struct StandardEvaluationStrategy;
+impl EvaluationStrategy for StandardEvaluationStrategy {
+fn evaluate(
+&self,
+expr: &dyn Expression,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+expr.evaluate(variables)
+}
+fn name(&self) -> &str { "Standard" }
+fn description(&self) -> &str {
+"Direct evaluation with no additional processing"
+}
+}
+The simplicity here is intentional. Standard evaluation serves as both the default mode and a
+baseline for comparing other strategies. By implementing the full trait interface, it's
+interchangeable with any other strategy.205
+Behavioral Patterns 1: Taking Action
+Optimizing evaluation
+The optimizing strategy attempts algebraic simplification before evaluation. This benefits
+expressions such as x * 0 + 5, which can be reduced to 5 regardless of x's value:
+idx_a699ef51
+pub struct OptimizingEvaluationStrategy {
+optimizer: ExpressionOptimizer,
+}
+impl EvaluationStrategy for OptimizingEvaluationStrategy {
+fn evaluate(
+&self,
+expr: &dyn Expression,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+let optimized = self.optimizer.optimize(expr)
+.unwrap_or_else(|| expr.clone_boxed());
+optimized.evaluate(variables)
+}
+fn name(&self) -> &str { "Optimizing" }
+fn description(&self) -> &str {
+"Applies algebraic simplifications before evaluation"
+}
+}
+This strategy owns an ExpressionOptimizer (which we'll build using the Visitor pattern in the
+next chapter). The optimization step is fallible, because some expressions can't be simplified,
+so we use unwrap_or_else to fall back to direct evaluation. This demonstrates how strategies
+can compose with other patterns we've implemented.
+idx_18d5e164
+Safe evaluation
+The safe strategy validates expressions before evaluation, catching errors that would otherwise
+occur during computation:
+idx_302ce142
+pub struct SafeEvaluationStrategy;
+impl SafeEvaluationStrategy {
+fn validate(
+&self,Chapter 7
+206
+expr: &dyn Expression,
+variables:&HashMap<String, f64>
+) -> Result<(), String> {
+// Check for division by zero, undefined variables, etc.
+// Would use a Visitor (Chapter 8) for tree traversal
+}
+}
+impl EvaluationStrategy for SafeEvaluationStrategy {
+fn evaluate(
+&self,
+expr: &dyn Expression,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+self.validate(expr, variables)?;
+expr.evaluate(variables)
+}
+fn name(&self) -> &str { "Safe" }
+fn description(&self) -> &str {
+"Validates expressions to catch errors before evaluation"
+}
+}
+The ? operator provides clean error propagation: if validation fails, the error returns
+immediately without attempting evaluation. This pattern – validate first, then proceed – is
+common in Rust, and the Strategy pattern makes it easy to apply selectively.
+idx_66b63dea
+Integrating strategies with the calculator
+The Calculator struct holds its current strategy as a trait object, enabling runtime strategy
+switching:
+idx_98fb1940
+pub struct Calculator {
+variables: HashMap<String, f64>,
+history: Vec<Calculation>,
+evaluation_strategy: Box<dyn EvaluationStrategy>,
+}207
+Behavioral Patterns 1: Taking Action
+Using Box<dyn EvaluationStrategy> rather than a generic parameter means we can change
+strategies at runtime, which is essential for user-selectable modes. The trade-off is dynamic
+dispatch (a vtable lookup per method call), but for our use case, the flexibility outweighs the
+minimal performance cost.
+The calculator's evaluation method delegates entirely to the current strategy:
+impl Calculator {
+pub fn evaluate_expression(
+&mut self,
+expr: &dyn Expression
+)-> Result<f64, String> {
+let result = self.evaluation_strategy
+.evaluate(expr, &self.variables)?;
+self.history.push(Calculation {
+expression: format!("{}", expr),
+result,
+timestamp: std::time::SystemTime::now(),
+});
+Ok(result)
+}
+pub fn set_strategy(&mut self, strategy: Box<dynEvaluationStrategy>) {
+println!("Switched to: {} ({})",
+strategy.name(),
+strategy.description());
+self.evaluation_strategy = strategy;
+}
+}
+The set_strategy method replaces the current strategy entirely. Rust's ownership model
+ensures the old strategy is dropped cleanly. Notice that the evaluate_expression method
+doesn't know or care which strategy is active. It just delegates and records results.
+idx_ac6413bc
+Using strategies in practice
+Here's how the Strategy pattern enables flexible evaluation in our calculator:
+idx_63a8312a
+let mut calculator = Calculator::new();
+let parser = ExpressionParser::new();Chapter 7
+208
+// Parse an expression with potential division by zero
+let expr = parser.parse("2 / (3 - 3) + 5").unwrap();
+// Standard evaluation will fail at runtime
+match calculator.evaluate_expression(&expr) {
+Ok(result) => println!("Result: {}", result),
+Err(err) => println!("Error: {}", err),
+}
+// Switch to safe evaluation
+calculator.set_strategy(Box::new(SafeEvaluationStrategy));
+// Now we catch the error during validation
+match calculator.evaluate_expression(&expr) {
+Ok(result) => println!("Result: {}", result),
+Err(err) => println!("Caught: {}", err),
+}
+The same expression produces different behavior depending on the active strategy. Standard
+evaluation attempts the division and fails during computation. Safe evaluation catches the
+problem during validation, providing a more informative error message.
+This flexibility extends to user interfaces: a calculator application could offer a Safe Mode
+toggle that switches strategies, giving users control over the safety-performance trade-off.
+idx_8ba17c29
+Combining Strategy with the Command pattern
+The Strategy pattern integrates naturally with patterns we've already implemented. Combined
+with the Command pattern, we can create commands that use the current strategy:
+idx_42b471a8
+pub struct EvaluateCommand {
+expression: Box<dyn Expression>,
+result: Option<f64>,
+}
+impl Command for EvaluateCommand {
+fn execute(&mut self, calculator: &mut Calculator)
+-> Result<Option<f64>, String>
+{
+// Uses whatever strategy is currently active
+let result = calculator.evaluate_expression(
+idx_60fcea6b209
+Behavioral Patterns 1: Taking Action
+&*self.expression
+)?;
+self.result = Some(result);
+Ok(Some(result))
+}
+// ... undo implementation
+}
+The command doesn't need to know about strategies. All it needs to do is call
+evaluate_expression, which delegates to the current strategy. This separation keeps each
+pattern focused on its responsibility: Command handles undo/redo, Strategy handles
+algorithm selection.
+idx_cff5aec7
+idx_9faf7fdf
+When to use the Strategy pattern
+The Strategy pattern fits scenarios where you need different variants of an algorithm for
+different contexts. In our calculator, different users have different needs: students might prefer
+safe mode, which catches errors, while performance-conscious users might prefer optimizing
+mode.
+idx_336eee04
+The pattern also applies when you want to isolate algorithm implementation from the code
+that uses it. Our calculator can add new evaluation modes, perhaps a symbolic computation
+strategy or a complex number strategy, without modifying the Calculator struct. New
+strategies implement the trait and become immediately usable. This follows the open/closed
+principle that we mentioned earlier. In Rust, this works naturally through traits. Any type that
+implements the trait can serve as a strategy.
+Consider the Strategy pattern when you find yourself writing large conditional blocks that
+select between algorithm variants. If those variants share a common interface, extracting them
+into strategies makes the code cleaner and more testable.
+In our calculator, the Strategy pattern has given us a clean, extensible way to support multiple
+evaluation modes. Combined with traits and Rust's ownership model, we've achieved runtime
+flexibility without sacrificing type safety.
+In the next section, we'll explore the Mediator pattern, which provides a way to reduce direct
+dependencies between components by having them communicate through a central
+coordinator.
+Mediator pattern: coordinating components
+The Mediator pattern addresses a common challenge in complex systems: how to enable
+communication between multiple components without creating tight coupling between them.
+idx_059b91b3Chapter 7
+210
+As systems grow, direct communication between components leads to a tangled web of
+dependencies that becomes difficult to maintain and extend. The Mediator pattern solves this
+by introducing a central coordinator that manages all interactions between components.
+In essence, the Mediator pattern defines an object that encapsulates how a set of objects
+interact. This promotes loose coupling by keeping objects from referring to each other
+explicitly, allowing them to focus on their core responsibilities. We don't have objects in Rust,
+but the pattern translates to an effective solution.
+The challenge of component coordination
+Our calculator has evolved significantly through the previous patterns we've implemented. We
+now have several sophisticated components that need to interact: the expression evaluator
+(built with our Composite pattern from the previous chapter), the command processor
+(managing operation history and undo/redo), a variable storage system, the parser chain (from
+our Chain of Responsibility pattern), and multiple evaluation strategies.
+idx_bf860d06
+Without a coordinating mechanism, these components would need to reference each other
+directly. The evaluator would need to know about variable storage to retrieve values. The
+command processor would need access to the evaluator to execute operations. Variable
+changes would need to notify the display. Each component knowing about multiple others
+creates tight coupling. Changing the evaluator's interface would require updating every
+component that uses it.
+The Mediator pattern breaks these direct dependencies. Each component knows only about
+the mediator, and the mediator knows about all components. When the evaluator computes a
+result, it notifies the mediator. The mediator then decides which other components need to
+know. For example, perhaps the display should show the result, and the history should record
+it. The evaluator doesn't know or care about these downstream effects.
+We'll implement this pattern in three parts: first, defining the mediator interface and event
+types, then showing how components interact with the mediator, and finally implementing
+the concrete mediator that orchestrates everything. This is a pattern that works cleanly for one
+service, but could also adapt to a multi-service architecture through a communication
+interface.
+idx_c5f9ebbf
+Designing the mediator interface
+The mediator interface declares methods that components use to communicate. Figure 7.1
+illustrates the mediator as the central communication hub between calculator components.
+idx_811ba211211
+Behavioral Patterns 1: Taking Action
+Figure 7.1: The calculator mediator
+In Rust, we define this as a trait with the Send + Sync bounds to ensure thread safety. Send
+means a type can be transferred between threads; Sync means it can be shared between
+threads via references. Together, they guarantee the mediator can safely operate in concurrent
+contexts, which is important for responsive applications where UI updates shouldn't block
+calculations:
+pub trait CalculatorMediator: Send + Sync {
+fn notify(&mut self,sender:&str,event:CalculatorEvent);
+fn get_result(&self)-> Option<f64>;
+fn get_variable(&self,name:&str)-> Option<f64>;
+fn get_all_variables(&self)-> HashMap<String, f64>;
+fn set_variable(&mut self, name: &str, value: f64);
+fn evaluate(&mut self,expression:&str)-> Result<f64, String>;
+fn change_angle_mode(&mut self, mode:&str);
+}
+The notify method is the core of the mediator's functionality. Components call this method to
+announce events, and the mediator decides how to distribute them. The sender parameter
+identifies the source, enabling the mediator to route events appropriately. For example, a
+variable change from user input might be handled differently from one from an undo
+command.
+The remaining methods provide unified access to calculator functionality. Components don't
+access each other directly; instead, they ask the mediator. This indirection means we can
+change how variables are stored without updating every component that uses variables.
+We also define an enum for the events that flow through the mediator:
+idx_52cb6e18
+pub enum CalculatorEvent {
+ResultComputed(f64),
+VariableChanged(String, f64),
+ModeChanged(String),Chapter 7
+212
+DisplayUpdate(String),
+ErrorOccurred(String),
+}
+This event system provides type-safe communication. When a result is computed, the
+component creates a ResultComputed event rather than calling display methods directly. Each
+enum variant carries the data needed for that event, and Rust's exhaustive matching ensures
+we handle all event types.
+Components and mediator integration
+Each component holds a reference to the mediator but knows nothing about other
+components. This is the key insight of the pattern: components are decoupled from each other,
+coupled only to the mediator interface.
+idx_781a2707
+The following snippet shows how an evaluation component keeps a reference to the mediator:
+pub struct EvaluationComponent {
+mediator: Arc<Mutex<dyn CalculatorMediator>>,
+evaluator: ExpressionEvaluator,
+}
+We use Arc<Mutex<dyn CalculatorMediator>> for the mediator reference. Arc provides
+shared ownership so multiple components can hold references. Mutex ensures safe mutable
+access. Only one component can interact with the mediator at a time. The dyn keyword
+indicates a trait object, enabling runtime polymorphism if we need different mediator
+implementations.
+The evaluation component's method demonstrates the interaction pattern:
+impl EvaluationComponent {
+pub fn evaluate(&self, expression: &str) -> Result<f64, String> {
+// Get variables from mediator (not from variable storage directly)
+let variables = {
+let mediator = self.mediator.lock().unwrap();
+mediator.get_all_variables()
+};
+// Perform the component's core responsibility
+let result = self.evaluator.evaluate(expression,&variables)?;
+// Notify mediator of the result (not the display directly)213
+Behavioral Patterns 1: Taking Action
+{
+let mut mediator = self.mediator.lock().unwrap();
+mediator.notify("evaluator", CalculatorEvent::ResultComputed(result));
+}
+Ok(result)
+}
+}
+Notice the pattern: retrieve context from the mediator, perform core work, and notify the
+mediator of results. You'll also notice that we call lock().unwrap() on the Mutex. The lock()
+method acquires exclusive access to the data inside the Mutex, returning a result. It only fails if
+the mutex is "poisoned," which happens when another thread panics while holding the lock.
+In well-structured code, this shouldn't occur, so unwrap() is standard practice here. In
+production code, you might use expect() with a descriptive message instead.
+The component never imports VariableStorage or CalculatorDisplay. It doesn't know those
+types exist. This isolation means we can replace the display implementation without touching
+evaluation code.
+The separate lock scopes, which are defined by the blocks that surround them, are important
+for avoiding deadlocks. We release the lock after getting variables before doing the (potentially
+slow) evaluation. We acquire it again briefly to send the notification. This pattern keeps lock
+duration minimal.
+idx_154cabfb
+The variable storage component follows the same principles:
+pub struct VariableStorage {
+mediator: Arc<Mutex<dyn CalculatorMediator>>,
+variables: HashMap<String, f64>,
+}
+impl VariableStorage {
+pub fn set_variable(&mut self, name: &str, value: f64) {
+self.variables.insert(name.to_string(), value);
+// Notify mediator of the change
+let mut mediator = self.mediator.lock().unwrap();
+mediator.notify(
+"variables",
+CalculatorEvent::VariableChanged(name.to_string(), value)Chapter 7
+214
+);
+}
+}
+When a variable changes, the storage component notifies the mediator rather than updating
+the display directly. The mediator will route this event appropriately, perhaps showing a
+confirmation message or triggering recalculation of dependent expressions. The storage
+component doesn't need to know.
+idx_2ede77fd
+The concrete mediator
+The concrete mediator knows about all components and orchestrates their interactions. (It's
+the one place in the system with knowledge of the overall architecture.) The following struct
+stores references to those components:
+idx_eb573d70
+idx_e111388e
+pub struct CalculatorMediatorImpl {
+evaluator: Option<Arc<EvaluationComponent>>,
+variables: Option<Arc<Mutex<VariableStorage>>>,
+display: Option<Arc<Mutex<CalculatorDisplay>>>,
+command_processor: Option<Arc<Mutex<CommandProcessor>>>,
+last_result: Option<f64>,
+current_mode: String,
+}
+Using Option for component references enables flexible initialization. Components can be
+registered after the mediator is created, and some components might be optional. A command-
+line calculator might not have a graphical display component, but the same mediator
+implementation works for both scenarios.
+The mediator provides registration methods for each component:
+impl CalculatorMediatorImpl {
+pub fn new() -> Self {
+Self {
+evaluator: None,
+variables: None,
+display: None,
+command_processor: None,
+last_result: None,
+current_mode: "standard".to_string(),
+}
+}215
+Behavioral Patterns 1: Taking Action
+pub fn set_evaluator(&mut self, evaluator: Arc<EvaluationComponent>) {
+self.evaluator = Some(evaluator);
+}
+pub fn set_display(&mut self, display: Arc<Mutex<CalculatorDisplay>>) {
+self.display = Some(display);
+}
+// ... similar methods for other components
+}
+This registration approach supports incremental construction. We create the mediator first,
+then create components (passing them mediator references), then register components with
+the mediator. The circular reference is resolved through Arc. The mediator holds Arc references
+to components, and components hold Arc references to the mediator.
+idx_58a8a00e
+idx_da47c26c
+In addition to storing and registering components, the mediator performs two key roles:
+coordinating events between components and providing unified access to shared functionality.
+idx_b111da40
+idx_379815b8
+Handling events
+The notify method is where the mediator earns its keep. It receives events from components
+and routes them to the appropriate handlers:
+idx_ca62d091
+impl CalculatorMediator for CalculatorMediatorImpl {
+fn notify(&mut self, sender: &str, event: CalculatorEvent) {
+match event {
+CalculatorEvent::ResultComputed(result) => {
+self.last_result = Some(result);
+self.update_display_with_result(result);
+}
+CalculatorEvent::VariableChanged(name, value) => {
+self.show_message(&format!("Variable {} set to {}", name,
+value));
+self.process_dependent_commands(&name);
+}
+CalculatorEvent::ModeChanged(mode) => {
+self.current_mode = mode.clone();
+self.show_message(&format!("Mode changed to: {}", mode));
+self.update_evaluation_strategy(&mode);
+}
+CalculatorEvent::ErrorOccurred(error) => {Chapter 7
+216
+self.show_error(&error);
+}
+CalculatorEvent::DisplayUpdate(message) => {
+self.show_message(&message);
+}
+}
+}
+}
+Each event type triggers specific coordination logic. When a result is computed, the mediator
+stores it and updates the display. When a variable changes, the mediator might trigger the
+recalculation of dependent expressions. The sender parameter enables different handling
+based on the event source, if needed.
+idx_3cddaa45
+The helper methods encapsulate the actual component interactions:
+impl CalculatorMediatorImpl {
+fn update_display_with_result(&self, result: f64) {
+if let Some(display) = &self.display {
+let display = display.lock().unwrap();
+display.show_result(result);
+}
+}
+fn show_message(&self, message: &str) {
+if let Some(display) = &self.display {
+let display = display.lock().unwrap();
+display.show_message(message);
+}
+}
+fn show_error(&self, error: &str) {
+if let Some(display) = &self.display {
+let display = display.lock().unwrap();
+display.show_error(error);
+}
+}
+}217
+Behavioral Patterns 1: Taking Action
+The if let pattern handles optional components gracefully. If no display is registered,
+display-related events are simply ignored rather than causing errors. This supports
+configurations where some components are absent.
+idx_02c0cd65
+Providing unified access
+The mediator also implements methods that let components access shared state without
+knowing which component owns it:
+idx_c75fcb70
+impl CalculatorMediator for CalculatorMediatorImpl {
+fn get_variable(&self, name: &str) -> Option<f64> {
+self.variables.as_ref().and_then(|vars| {
+let vars = vars.lock().unwrap();
+vars.get_variable(name)
+})
+}
+fn evaluate(&mut self, expression: &str) -> Result<f64, String> {
+self.evaluator.as_ref()
+.ok_or_else(|| "No evaluator component available".to_string())
+.and_then(|eval| eval.evaluate(expression))
+}
+}
+These methods delegate to the appropriate component while handling the case where the
+component isn't registered. The and_then combinator chains operations that might fail,
+keeping the code concise.
+Wiring everything together
+With all pieces implemented, we assemble the system by creating the mediator and the
+components with mediator references:
+idx_a08159a3
+// Create the mediator
+let mediator = Arc::new(Mutex::new(CalculatorMediatorImpl::new()));
+// Create components, each holding a mediator reference
+let evaluator = Arc::new(EvaluationComponent::new(
+Arc::clone(&mediator),
+create_standard_evaluator()
+));
+let variables = Arc::new(Mutex::new(Chapter 7
+218
+VariableStorage::new(Arc::clone(&mediator))
+));
+let display = Arc::new(Mutex::new(
+CalculatorDisplay::new(Arc::clone(&mediator))
+));
+After creating the components, we register them with the mediator:
+{
+let mut med = mediator.lock().unwrap();
+med.set_evaluator(Arc::clone(&evaluator));
+med.set_variables(Arc::clone(&variables));
+med.set_display(Arc::clone(&display));
+}
+The block scope ensures we release the mediator lock before using the system. Once wired,
+components communicate exclusively through the mediator. Setting a variable triggers a
+notification, which the mediator routes to the display for user feedback.
+idx_e2a4bc3a
+When to use the Mediator pattern
+The Mediator pattern fits systems where multiple components need to collaborate but
+shouldn't know about each other directly. Our calculator exemplifies this: evaluation, storage,
+display, and command processing are distinct concerns that need coordination.
+idx_af2dea24
+The pattern particularly helps when component interactions are complex and varied. Without
+a mediator, adding a new component that needs to respond to variable changes requires
+modifying the variable storage to notify this new component. With a mediator, we simply
+register the new component and handle the relevant events in the mediator. Existing
+components remain unchanged.
+Consider the Mediator pattern when you find components accumulating references to each
+other, when changing one component's interface requires updating many others, or when you
+want to vary component interactions without changing the components themselves. The
+trade-off is that the mediator itself can become complex. All coordination logic concentrates
+there. For simple systems with few interactions, direct communication might be clearer.
+By implementing the Mediator pattern, we've successfully integrated our Composite
+expression trees, Command processors, Chain of Responsibility parsers, and Strategy-based
+evaluators into a cohesive, loosely coupled system. Each component remains focused on its
+core responsibility, and the mediator handles the coordination that makes them work together.219
+Behavioral Patterns 1: Taking Action
+In the next section, we'll explore the Template Method pattern, which helps define reusable
+algorithms with customizable steps.
+Template Method pattern: structured algorithms
+The Template Method pattern provides a way to standardize algorithms while allowing
+customization of specific steps. It defines the skeleton of an algorithm in a base type, deferring
+some steps to subtypes. This enables code reuse for common algorithm steps while allowing
+specific implementations to vary.
+idx_a7713982
+The challenge of algorithm standardization
+Our calculator has grown sophisticated through each pattern we've implemented. We now
+have components that process expressions in similar but slightly different ways: standard
+arithmetic uses basic operators, scientific mode adds trigonometric functions, and
+programmer mode handles different number bases.
+idx_7ff47172
+Despite these differences, all expression evaluation follows a common sequence:
+1.Tokenize the input string into discrete tokens (numbers, operators, functions)
+2.Validate the token sequence for basic correctness
+3.Parse the tokens into a structured representation (our expression trees from the
+previous chapter)
+4.Evaluate the structured representation to produce a result
+Without standardization, each evaluator would duplicate this flow. The standard evaluator
+would implement tokenize–validate–parse–evaluate. The scientific evaluator would implement
+its own tokenize–validate–parse–evaluate. Bugs fixed in one might not be fixed in others.
+Changes to the flow would require updating every evaluator.
+Our Rust implementation of the Template Method pattern extracts this common flow into a
+trait, with the fixed structure defined once and customizable steps as methods that
+implementations can override. We'll define the trait with the overall algorithm, provide default
+implementations for common steps, and require concrete implementations for steps that vary.
+Designing the template method trait
+In Rust, we don't have class hierarchies, so we need to implement the Template Method
+pattern using a trait with default methods. The "template method" itself orchestrates the
+algorithm flow:
+idx_65314adb
+pub trait ExpressionEvaluator {
+fn evaluate(
+&self,
+idx_04c44715Chapter 7
+220
+expression: &str,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+let tokens = self.tokenize(expression)?;
+self.validate_tokens(&tokens)?;
+let parsed = self.parse(tokens)?;
+self.evaluate_parsed(parsed, variables)
+}
+// Methods defined below...
+}
+This evaluate method is our template method. It defines the four-step algorithm structure,
+but each step delegates to another method. The ? operator propagates errors at each step. If
+tokenization fails, we don't attempt validation.
+In object-oriented languages, template methods typically use inheritance: a base class defines
+the algorithm, and subclasses override specific steps. Our Rust approach using traits and
+default methods achieves the same result without inheritance. Any type implementing
+ExpressionEvaluator gets this algorithm flow for free; it only needs to provide the
+customizable pieces.
+idx_5f7ac059
+Common steps with default implementations
+Steps that work the same across most evaluators can get default implementations. These
+methods use the Token type we defined alongside our Expression trait in the previous chapter;
+each Token represents a discrete element of input such as a number, operator, or function
+name:
+idx_e5c1c17d
+pub trait ExpressionEvaluator {
+// ... evaluate method above ...
+fn tokenize(&self, expression: &str) -> Result<Vec<Token>, String> {
+expression
+.split_whitespace()
+.map(Token::from_str)
+.collect()
+}
+}221
+Behavioral Patterns 1: Taking Action
+The default tokenizer splits on whitespace and converts each piece to a Token. This works for
+basic expressions such as "2 + 3 * 4". Scientific evaluators may override this to recognize
+functions such as "sin" and "cos", but standard evaluators can use this default.
+Validation also has a sensible default:
+idx_9e0ee3c9
+fn validate_tokens(&self,tokens:&[Token])-> Result<(), String> {
+if tokens.is_empty() {
+return Err("Empty expression".to_string());
+}
+let mut paren_depth: i32 = 0;
+for token in tokens {
+match token {
+Token::OpenParen => paren_depth += 1,
+Token::CloseParen => {
+paren_depth -= 1;
+if paren_depth < 0 {
+return Err("Mismatched parentheses".to_string());
+}
+}
+_ => {}
+}
+}
+if paren_depth != 0 {
+return Err("Mismatched parentheses".to_string());
+}
+Ok(())
+}
+This validation catches empty expressions and unbalanced parentheses, which are problems
+that affect all evaluator types. The pattern matching on Token variants demonstrates how
+Rust's enums integrate naturally with validation logic.
+idx_568e77cf
+Required steps without defaults
+Steps that vary between evaluators are declared without implementations:
+idx_04cde6b2
+pub trait ExpressionEvaluator {
+// ... default methods above ...Chapter 7
+222
+fn parse(&self, tokens: Vec<Token>) -> Result<Box<dyn Expression>, String>;
+fn evaluate_parsed(
+&self,
+expression: Box<dyn Expression>,
+variables:&HashMap<String, f64>
+) -> Result<f64, String>;
+}
+Concrete evaluators must implement these methods. The trait won't compile without them,
+ensuring no evaluator accidentally skips required steps. The trait controls the overall flow and
+calls into the implementations when needed. Your code provides the pieces, and the template
+method decides when to use them.
+idx_af002847
+Implementing concrete evaluators
+With the template defined, concrete evaluators implement only the required methods while
+inheriting the algorithm structure and common steps.
+idx_c7c36e67
+Recursive descent evaluator
+A recursive descent evaluator implements parsing using a top-down approach:
+idx_4d97246c
+pub struct RecursiveDescentEvaluator;
+impl ExpressionEvaluator for RecursiveDescentEvaluator {
+fn parse(&self, tokens: Vec<Token>) -> Result<Box<dyn Expression>, String> {
+self.parse_expression(&tokens)
+}
+fn evaluate_parsed(
+&self,
+expression: Box<dyn Expression>,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+expression.evaluate(variables)
+}
+}
+This evaluator uses the default tokenize and validate_tokens implementations. It provides
+its own parsing algorithm but delegates final evaluation to the expression tree we built with223
+Behavioral Patterns 1: Taking Action
+the Composite pattern in the previous chapter. The template method handles the flow; this
+implementation provides the specialized pieces.
+Shunting yard evaluator with custom validation
+Sometimes an evaluator needs different behavior for a step that has a default. The shunting
+yard algorithm, developed by Dijkstra, takes a different approach to parsing. Instead of
+recursively descending through grammar rules, it uses an operator stack to handle precedence,
+building the expression tree from the bottom up. So, it provides its own parse while keeping
+the same evaluation:
+idx_d5b65028
+pub struct ShuntingYardEvaluator;
+impl ExpressionEvaluator for ShuntingYardEvaluator {
+fn parse(&self, tokens: Vec<Token>) -> Result<Box<dyn Expression>, String> {
+self.build_expression_tree(tokens)
+}
+fn evaluate_parsed(
+&self,
+expression: Box<dyn Expression>,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+expression.evaluate(variables)
+}
+// ... validate_tokens override shown below
+}
+Like the recursive descent evaluator, this implements the two required methods while
+inheriting the default tokenizer and the template method flow.
+But the shunting yard algorithm also can't handle consecutive operators, so it needs stricter
+validation. We can override validate_tokens to add this check:
+idx_4043de43
+impl ExpressionEvaluator for ShuntingYardEvaluator {
+// ... parse and evaluate_parsed as above ...
+fn validate_tokens(&self,tokens:&[Token])-> Result<(), String> {
+<Self as ExpressionEvaluator>::validate_tokens(self, tokens)?;
+for i in 0..tokens.len().saturating_sub(1) {
+if let (Token::Operator(_), Token::Operator(_)) =Chapter 7
+224
+(&tokens[i], &tokens[i + 1])
+{
+return Err("Invalid consecutive operators".to_string());
+}
+}
+Ok(())
+}
+}
+The override demonstrates an important Rust pattern: calling the default implementation with
+explicit trait syntax (<Self as ExpressionEvaluator>::validate_tokens) and then adding
+custom logic. This extends rather than replaces the default behavior. The shunting yard
+evaluator gets parentheses validation from the default while adding its own consecutive-
+operator check.
+This explicit syntax for calling default implementations differs from object-oriented super
+calls. In Rust, there's no implicit "parent." You need to explicitly name which trait's method
+you want, making the code clearer about where behavior comes from.
+Specialized evaluators through composition
+For scientific mode, we can create an evaluator that customizes tokenization while reusing
+parsing logic:
+idx_6857e553
+pub struct ScientificEvaluator {
+base_evaluator: ShuntingYardEvaluator,
+}
+impl ExpressionEvaluator for ScientificEvaluator {
+fn tokenize(&self, expression: &str) -> Result<Vec<Token>, String> {
+// Enhanced tokenization recognizing sin, cos, log, etc.
+// Uses regex or custom scanning to identify function calls
+self.tokenize_with_functions(expression)
+}
+fn parse(&self, tokens: Vec<Token>) -> Result<Box<dyn Expression>, String> {
+// Delegate to the base evaluator's parsing
+self.base_evaluator.parse(tokens)
+}
+fn evaluate_parsed(225
+Behavioral Patterns 1: Taking Action
+&self,
+expression: Box<dyn Expression>,
+variables:&HashMap<String, f64>
+) -> Result<f64, String> {
+expression.evaluate(variables)
+}
+}
+This evaluator overrides tokenization to recognize scientific functions while delegating parsing
+to a ShuntingYardEvaluator it holds. The composition approach lets us mix and match
+implementations – for example, scientific tokenization with shunting yard parsing – without
+complex inheritance hierarchies.
+Integration with other patterns
+The Template Method pattern integrates naturally with patterns we've already implemented.
+Within our Mediator-coordinated system, the evaluation component uses a template method
+evaluator:
+idx_8e009ed8
+impl EvaluationComponent {
+pub fn process_input(&self, input: &str) -> Result<f64, String> {
+let variables = {
+let mediator = self.mediator.lock().unwrap();
+mediator.get_all_variables()
+};
+// The evaluator uses our template method
+let result = self.evaluator.evaluate(input,&variables)?;
+{
+let mut mediator = self.mediator.lock().unwrap();
+mediator.notify("evaluator",
+CalculatorEvent::ResultComputed(result));
+}
+Ok(result)
+}
+}Chapter 7
+226
+The component doesn't know which concrete evaluator it's using. It just calls evaluate, and
+the template method handles the standard flow while the concrete implementation provides
+the specific parsing algorithm.
+Combined with the Strategy pattern, we can swap evaluators at runtime; each evaluator brings
+its own template method implementation.
+When to use the Template Method pattern
+The Template Method pattern fits when you have algorithms that share a common structure
+but differ in specific steps. Our expression evaluators all tokenize, validate, parse, and evaluate.
+The structure is fixed, but tokenization and parsing vary.
+idx_387fee31
+The pattern also helps when you want to control the algorithm flow while allowing extensions.
+The template method defines when validation happens relative to parsing; concrete
+implementations can customize validation but can't skip it or reorder it.
+Consider this pattern when you find yourself copying algorithm structures between types,
+when you need to ensure certain steps always happen in order, or when you want to provide
+sensible defaults that most implementations can use unchanged.
+The trade-off is rigidity: the template method fixes the algorithm structure. If some evaluator
+needs a fundamentally different flow, perhaps parsing and validation interleaved, the pattern
+doesn't accommodate that easily. For our calculator, the fixed tokenize-validate-parse-
+evaluate flow makes sense across all modes, making Template Method a good fit.
+Summary
+In this chapter, we examined behavioral design patterns and how they help define the
+communication and interaction between objects. We explored five key patterns through our
+Correct Calculator project, showing how they can enhance an application's flexibility,
+maintainability, and feature set.
+First, we looked at the Command pattern, which encapsulates operations as objects. We saw
+how this allowed us to implement undo/redo functionality and maintain operation history. By
+representing each calculator operation as a command object with execute and undo methods,
+we created a system that could track and reverse operations, greatly enhancing the user
+experience.
+Then we explored the Chain of Responsibility pattern, which creates a pipeline of handlers that
+can process requests. We implemented this to handle different types of calculator input, from
+simple expressions to variable assignments and special commands. This made our input
+processing system more flexible and extensible, as new handlers could be added without
+modifying existing code.227
+Behavioral Patterns 1: Taking Action
+Next, we studied the Strategy pattern, which allows algorithms to be selected at runtime. We
+used this to implement different evaluation strategies for our calculator, making it adaptable
+to different contexts and requirements. This separated the algorithm implementation from the
+core calculator logic, making both more maintainable.
+We also examined the Mediator pattern, which reduces direct dependencies between
+components by having them communicate through a central mediator. This helped us
+coordinate the various parts of our calculator, including the expression evaluator, variable
+storage, command processor, and user interface, without creating a tangled web of
+dependencies.
+Finally, we looked at the Template Method pattern, which defines the skeleton of an algorithm
+while allowing specific steps to be overridden. We used this to create a structured approach to
+expression evaluation, ensuring consistent behavior while allowing for customization of
+specific evaluation steps.
+These patterns transformed our calculator from a simple tool into a dynamic, interactive
+application. By building on the structural patterns from the previous chapter, we
+demonstrated how different categories of design patterns can work together to create a
+cohesive, well-designed system.
+Throughout the chapter, we saw how Rust's traits, ownership model, and type system
+influenced our implementation of these classical patterns. Rather than simply translating
+object-oriented implementations, we adapted the patterns to fit Rust's unique features, often
+resulting in cleaner, safer code.
+In the next chapter, we'll continue our exploration of behavioral patterns, focusing on those
+that help manage state, traverse collections, and observe changes. We'll also complete our
+Correct Calculator project with advanced features such as different calculator modes, state
+persistence, and reactive updates.

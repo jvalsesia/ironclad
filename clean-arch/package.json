@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:scaffold": "node --test scripts/scaffold/test/*.test.mjs",
     "test:rust-arch": "node --test scripts/test/*.test.mjs"
   }
 }

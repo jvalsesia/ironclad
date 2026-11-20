@@ -1,0 +1,886 @@
+Don't Fight the Borrow Checker
+In this chapter, we'll go over why battling the borrow checker is rarely a successful tactic. We'll
+look at how attempting to deceive or circumvent it frequently results in complicated,
+unreliable code, while heeding its advice typically produces better results. We'll also look at
+popular strategies used by developers to get around the borrow checker's restrictions and find
+out why they usually lead to more issues rather than solutions.
+We'll start by looking at typical strategies used to try to "defeat" the borrow checker and why
+they result in code that gets more complex and brittle. Next, we'll talk about why, even though
+it is sometimes necessary, unsafe code is typically not the solution to borrow checker
+problems. Lastly, we will examine how the urge to circumvent borrow checker errors by using
+global state and mutable statics frequently results in code that is challenging to read and
+maintain.
+We will also continue our calculator project. We'll see what happens when we try to get
+around borrowing restrictions with various tricks, and how that leads us into deeper problems.
+We'll discover that listening to what the borrow checker is telling us often reveals better ways
+to structure our code.
+In this chapter, we're going to cover the following main topics:
+•Trying to defeat the borrow checker
+•unsafe is (usually) not the answer
+•Over-using globals and mutable statics
+Technical requirements
+The source code for the exercises can be found on GitHub at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust. The repository isChapter 4
+78
+organized by chapter. The relevant exercises for this chapter are at https://github.com/
+PacktPublishing/Design-Patterns-and-Best-Practices-in-Rust/tree/main/ch4.
+Trying to defeat the borrow checker: friend or foe?
+In this section, we will examine why developers frequently attempt to circumvent the borrow
+checker and why doing so usually results in issues. We'll examine typical strategies used to try
+to get past borrowing limits and discover how frequently they cause more problems than they
+fix.
+After so many fights with the borrow checker, sometimes, Rust developers start to treat it as an
+enemy to be vanquished. This is an understandable response when the borrow checker
+consistently rejects your design even though the code feels clear and well-organized. Compiler
+errors can seem random and annoying. There must be a way to get the borrow checker to
+accept your code, right?
+idx_defb8b9d
+Let's see what this looks like in our calculator project.
+We'll try adding support for more complex expressions that can reuse previous results by
+keeping track of prior calculations and allowing them to be referenced later. To accomplish
+this, we'll parse and evaluate each expression, watching for any references to past results. We'll
+then retrieve each of the results and update the current value. Let's try it!
+We can start by creating a Calculator struct that maintains the current value and a memory of
+previous results. The evaluate method, which we'll define in the next snippet, will check if the
+expression references a previous result (such as "result1" or "result2"), and if so, look it up.
+Otherwise, it parses and evaluates the expression normally:
+struct Calculator {
+current_value: f64,
+memory: Vec<f64>,
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+current_value: 0.0,
+memory: Vec::new(),
+}
+}79
+Don't Fight the Borrow Checker
+The struct stores both the current value and a history of all previous results in a Vec. The new
+constructor initializes the current value to 0.0, and the Vec to its empty state.
+idx_d28332ad
+Now let's implement the evaluate method that handles result references. The method first
+checks if the expression starts with "result" to handle references to previous calculations. If
+not, it delegates to parse_and_evaluate for normal expression handling:
+fn evaluate(&mut self, expression: &str) -> Result<f64, String> {
+if expression.starts_with("result") {
+if let Some(index) = expression.strip_prefix("result") {
+if let Ok(offset) = index.trim().parse::<usize>() {
+return self.get_previous_result(offset);
+}
+}
+}
+let result = self.parse_and_evaluate(expression)?;
+self.memory.push(result);
+self.current_value = result;
+Ok(result)
+}
+fn get_previous_result(&self, index: usize) -> Result<f64, String> {
+if index == 0 {
+Ok(self.current_value)
+} else {
+let pos = self.memory.len().checked_sub(index)
+.ok_or("Invalid result index")?;
+self.memory.get(pos)
+.copied()
+.ok_or_else(|| "Invalid result index".to_string())
+}
+}
+At first, this approach seems straightforward: we either retrieve a previous result or compute a
+new one, then update the calculator's state.
+idx_849fcb9bChapter 4
+80
+The parse_and_evaluate method is where our design runs into trouble. It needs to both
+tokenize the expression (which requires &self) and look up previous results (which also
+requires &self), while the method itself takes &mut self:
+fn parse_and_evaluate(&mut self, expression: &str) -> Result<f64, String> {
+let tokens = self.tokenize(expression)?;
+for token in &tokens {
+if let Token::ResultReference(index) = token {
+let prev = self.get_previous_result(*index)?;
+/* use prev in calculation */
+}
+}
+todo!("Actual evaluation TBD")
+}
+}
+This seems like a reasonable first draft. We store our results and provide a way to reference
+them. However, the borrow checker has a different opinion, which it expresses when we
+attempt to compile it:
+error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as
+mutable
+--> src/calculator.rs:84:30
+|
+80 |
+fn parse_and_evaluate(&mut self, expression: &str) -> Result<f64, String>
+{
+|--------- mutable borrow occurs here
+84 |let prev = self.get_previous_result(*index)?;
+|^^^^ immutable borrow occurs here
+...
+Since we are already mutably borrowing self, we are unable to also borrow it immutably in
+the call to get_previous_result inside parse_and_evaluate.
+It is tempting to find clever ways around this restriction. One possibility is to try to split the
+calculator into separate structs, or we could store indexes instead of looking up values
+immediately. One solution that seems much simpler is to use interior mutability.
+idx_35fbfde181
+Don't Fight the Borrow Checker
+Interior mutability with RefCell allows us to modify data through an immutable reference by
+moving the borrow checking to runtime. We wrap our memory Vec in a RefCell, which lets
+get_previous_result take &self instead of &mut self. Let's see where interior mutability
+gets us:
+idx_8a273cd4
+use std::cell::RefCell;
+struct Calculator {
+current_value: f64,
+memory:RefCell<Vec<f64>>,
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+current_value: 0.0,
+memory: RefCell::new(Vec::new()),
+}
+}
+fn evaluate(&self,expression:&str)-> Result<f64, String> {
+if expression.starts_with("result") {
+if let Some(index) = expression.strip_prefix("result") {
+if let Ok(offset) = index.trim().parse::<usize>() {
+return self.get_previous_result(offset);
+}
+}
+}
+let result = self.parse_and_evaluate(expression)?;
+self.memory.borrow_mut().push(result);
+self.current_value = result;
+Ok(result)
+}
+What we have changed here is memory. Now it's stored in a RefCell<Vec<f64>>. Now we access
+the memory through borrow() for reading and borrow_mut() for writing. The compiler accepts
+this because RefCell moves the borrowing rules to runtime. Let's see the remaining methods.Chapter 4
+82
+With RefCell, both get_previous_result and parse_and_evaluate can take &self,
+eliminating the compile-time conflict:
+idx_ab92db35
+fn get_previous_result(&self, index: usize) -> Result<f64, String> {
+if index == 0 {
+Ok(self.current_value)
+} else {
+let memory = self.memory.borrow();
+let pos = memory.len().checked_sub(index)
+.ok_or("Invalid result index")?;
+memory.get(pos)
+.copied()
+.ok_or_else(|| "Invalid result index".to_string())
+}
+}
+fn parse_and_evaluate(&self, expression: &str) -> Result<f64, String> {
+let tokens = self.tokenize(expression)?;
+for token in &tokens {
+if let Token::ResultReference(index) = token {
+let prev = self.get_previous_result(*index)?;
+/* Here we would use `prev` in calculation */
+}
+}
+todo!("Actual evaluation TBD")
+}
+}
+This version does compile, but at the cost of introducing some issues. Because we are using
+RefCell, we've moved Rust's borrowing checks from compile time to runtime. RefCell
+enforces the same borrowing rules as regular references. You can have either multiple
+immutable borrows or a single mutable borrow at any time, but violations now cause runtime
+panics instead of compilation errors. For example, if one part of our code calls borrow_mut() to
+modify the calculator's state while another part still holds a reference from borrow(), we
+would see a runtime panic like this:
+thread 'main' panicked at 'already borrowed: BorrowMutError', src/calculator.rs:
+84:3083
+Don't Fight the Borrow Checker
+This is particularly dangerous in complex code bases where the borrowing patterns aren't
+immediately obvious. Further, we have made the code more complex and challenging to
+understand. The runtime borrowing checks make the code less efficient, and it will be more
+difficult to spot bugs because what would have been compile-time errors are now runtime
+crashes.
+The borrow checker was actually trying to tell us something important: our design has a flaw.
+We're mixing up the parsing of expressions (which need to look up previous results) with the
+management of calculation history.
+idx_707e83c0
+Let's try a better approach. Instead of fighting the borrow checker, let's redesign our interface.
+We'll separate tokenization from evaluation, handling result references as a distinct phase.
+First, we define a Token type that can represent result references:
+#[derive(Debug)]
+enum Token {
+Number(f64),
+ResultReference(usize),
+Operator(char),
+}
+impl Calculator {
+fn tokenize(&self, expression: &str) -> Result<Vec<Token>, String> {
+let mut tokens = Vec::new();
+for part in expression.split_whitespace() {
+let token = if let Some(index) = part.strip_prefix("result") {
+if let Ok(offset) = index.trim().parse() {
+Token::ResultReference(offset)
+} else {
+return Err("Invalid result reference".to_string());
+}
+} else if let Ok(num) = part.parse() {
+Token::Number(num)
+} else if part.len() == 1 && "+-*/".contains(part) {
+Token::Operator(part.chars().next().unwrap())
+} else {
+return Err(format!("Invalid token: {}", part));
+};
+tokens.push(token);Chapter 4
+84
+}
+Ok(tokens)
+}
+The Token enum now includes a ResultReference variant that stores the index rather than
+immediately looking up the value. The tokenize method converts the input string into tokens
+without accessing the memory. It just records that a result reference was requested. This
+separation is key: tokenization doesn't need access to the calculator's state. Now let's see how
+we resolve these references in a separate step.
+idx_d3821f2c
+The evaluate method now works in distinct phases: tokenize, resolve references, then
+evaluate. Each phase completes before the next begins, eliminating the borrowing conflict:
+fn evaluate_tokens(&self, tokens: Vec<Token>) -> Result<f64, String> {
+todo!("The evaluator is TBD")
+}
+fn evaluate(&mut self, expression: &str) -> Result<f64, String> {
+let tokens = self.tokenize(expression)?;
+let mut resolved_tokens = Vec::new();
+for token in tokens {
+match token {
+Token::ResultReference(index) => {
+let value = self.get_previous_result(index)?;
+resolved_tokens.push(Token::Number(value));
+}
+token => resolved_tokens.push(token),
+}
+}
+let result = self.evaluate_tokens(resolved_tokens)?;
+self.memory.push(result);
+self.current_value = result;
+Ok(result)
+}
+}85
+Don't Fight the Borrow Checker
+The resolution loop converts ResultReference tokens into Number tokens by looking up the
+values. This happens after tokenization is complete, so there's no conflict between the
+immutable borrow for get_previous_result and any mutable operations. The borrow checker
+was guiding us toward this cleaner separation of concerns: tokenize first, resolve references
+second, evaluate third.
+idx_8de30677
+In this implementation, we focus on one thing at a time. We first parse the expression into
+tokens, and any result references are then resolved. Then, we evaluate the expression.
+By separating the concerns and thinking about the flow of data, we've created a much more
+workable design. The code is far more manageable and simpler to comprehend. The borrow
+checker was attempting to inform us that it was a bad design to combine expression
+processing and result lookup. By listening to it rather than battling it, we found a better
+answer.
+idx_20d3f050
+In the next section, we'll explore another common response to borrow checker frustration:
+reaching for unsafe code. We'll see why this is usually not the answer and examine better
+alternatives.
+unsafe is (usually) not the answer: a dangerous
+shortcut
+In this section, we will examine why developers sometimes resort to unsafe code when they
+encounter difficulties with the borrow checker, and why this is usually not a wise course of
+action. We'll learn how simple it is to construct code that compiles but is in fact unsound, and
+we'll find that utilizing unsafe typically doesn't address the fundamental problems with our
+design.
+Sometimes, after developers have tried everything else to make their code compile, unsafe can
+seem like the answer. It isn't that crazy. The language has unsafe in it for a reason. The creators
+of the language saw a need to sometimes circumvent safety for legitimate purposes:
+interfacing with foreign code through a Foreign Function Interface (FFI), implementing low-
+level data structures, or accessing hardware directly. The Rustonomicon (https://doc.rust-
+lang.org/nomicon/) provides comprehensive guidance on when and how to use unsafe
+correctly.
+idx_442b4619
+idx_a764a16d
+idx_e2281657
+Rust itself uses unsafe code in its standard library. It seems like, when used sparingly, unsafe
+is a solution for issues that can't be solved by normal means. Maybe it's acceptable for us to use
+it to solve our borrowing issues.
+Let's add a new feature to our calculator and see how this way of thinking could lead us astray.Chapter 4
+86
+We want to add undo and redo support to our calculator. Users should be able to step
+backward through their calculation history and forward again. This is a common feature in
+many applications, and it seems straightforward enough.
+If you're coming from C or C++, you might immediately think of a pointer-based approach:
+store all the calculator states in a collection and maintain a "current" pointer that we move
+backward or forward as the user requests undo or redo. This would let us navigate the history
+efficiently without copying data around.
+But the borrow checker isn't going to like us maintaining pointers in a data structure that
+might change. We could try using references instead of raw pointers, but Rust won't allow us
+to store a reference to an element of a Vec inside the same struct that owns the Vec. The self-
+referential borrow would not be allowed, but even if it were allowed, it would prevent the Vec
+from ever being modified. Rather than wrestle with lifetimes, a developer familiar with C
+might reach for raw pointers to sidestep the issue entirely.
+We could try to work around this with unsafe code. After all, we just need a simple pointer.
+How bad could it be?
+idx_9d2384e0
+Let's start by defining what a calculator state looks like. Each state captures the expression that
+was evaluated and its result:
+struct CalculatorState {
+expression: String,
+result: f64,
+}
+The CalculatorState struct is straightforward: it stores the expression string and the
+computed result. We'll accumulate these states as the user performs calculations.
+Now, let's build a history structure that tracks these states using a raw pointer to mark our
+current position:
+struct UnsafeHistory {
+states: Vec<CalculatorState>,
+current: Option<*const CalculatorState>,
+}
+impl UnsafeHistory {
+fn new() -> Self {
+Self {
+states: Vec::with_capacity(10),87
+Don't Fight the Borrow Checker
+current: None,
+}
+}
+fn push(&mut self, state: CalculatorState) {
+self.states.push(state);
+self.current = Some(self.states.last().unwrap() as *const
+CalculatorState);
+}
+}
+The UnsafeHistory struct stores states in a Vec and maintains a raw pointer to the current
+state. We initialize the Vec with a capacity of 10, which will become significant shortly. The
+push method adds a new state and updates our current pointer to point at it. Note that creating
+raw pointers is safe Rust. The danger comes when we dereference them.
+idx_e1900524
+Now, let's implement a method to retrieve the current result. This is where we first enter
+unsafe territory:
+fn current_result(&self) -> Option<f64> {
+self.current.map(|ptr| unsafe { (*ptr).result })
+}
+The current_result method dereferences our raw pointer inside an unsafe block to retrieve
+the result. We're telling the compiler "Trust me, this pointer is valid," which is a promise we'll
+soon discover we can't keep.
+With the current result accessible, we can implement navigation through history with undo
+and redo methods:
+idx_de1c5017
+fn undo(&mut self) -> Option<f64> {
+let ptr = self.current?;
+// Find current position and move back one
+let pos = self.states.iter()
+.position(|s| std::ptr::eq(s, ptr))?;
+if pos > 0 {
+self.current = Some(&self.states[pos - 1] as *const CalculatorState);
+self.current_result()
+} else {Chapter 4
+88
+None // Already at the beginning
+}
+}
+fn redo(&mut self) -> Option<f64> {
+let ptr = self.current?;
+let pos = self.states.iter()
+.position(|s| std::ptr::eq(s, ptr))?;
+if pos + 1 < self.states.len() {
+self.current = Some(&self.states[pos + 1] as *const CalculatorState);
+self.current_result()
+} else {
+None // Already at the end
+}
+}
+The undo method finds our current position in the Vec by comparing pointers, then moves the
+current pointer back one slot and returns that result. The redo method does the opposite,
+moving forward through history. This seems reasonable. We're just moving a pointer around.
+idx_9f7f3718
+Now, let's define a Calculator struct that will use this history:
+struct Calculator {
+history: UnsafeHistory,
+}
+The Calculator struct simply wraps our UnsafeHistory. All the state lives in the history;
+Calculator just provides the user-facing interface.
+Let's implement the Calculator's methods to wire everything together:
+impl Calculator {
+fn new() -> Self {
+Self {
+history: UnsafeHistory::new(),
+}
+}
+fn evaluate(&mut self, expression: &str) -> Result<f64, String> {89
+Don't Fight the Borrow Checker
+if expression == "undo" {
+return self.history.undo()
+.ok_or_else(|| "Nothing to undo".to_string());
+}
+if expression == "redo" {
+return self.history.redo()
+.ok_or_else(|| "Nothing to redo".to_string());
+}
+let result = self.parse_and_evaluate(expression)?;
+self.history.push(CalculatorState {
+expression: expression.to_string(),
+result,
+});
+Ok(result)
+}
+fn parse_and_evaluate(&self, expression: &str) -> Result<f64, String> {
+todo!("Evaluation TBD")
+}
+}
+The evaluate method checks for the special "undo" and "redo" commands first, delegating to
+our history navigation. For normal expressions, it evaluates them and pushes the result onto
+the history stack. This creates a clean interface where users can type "undo" to go back.
+idx_8fbd8076
+Let's exercise this code by performing more calculations than our initial Vec capacity:
+fn main() -> Result<(), String> {
+let mut calc = Calculator::new();
+// Add calculations until we exceed capacity
+for i in 0..15 {
+calc.evaluate(&format!("{} + {}", i, i))?;
+}
+// Try to undo
+println!("Current: {:?}", calc.history.current_result());
+println!("Undo: {:?}", calc.evaluate("undo")?);Chapter 4
+90
+println!("Undo again: {:?}", calc.evaluate("undo")?);
+Ok(())
+}
+This seems to work perfectly... until it suddenly doesn't. The problem is that when a Vec needs
+to grow beyond its capacity (which we initialized to 10), it must reallocate its storage in a new,
+larger memory block. When this happens, all pointers to elements in the old storage become
+invalid. Under normal circumstances, Rust's borrow checker prevents us from having these
+kinds of dangling references, but by using unsafe code, we've bypassed this protection.
+So, we happily added calculations until we exceeded the initial capacity, but then, disaster!
+Normally, a Vec growing its memory is harmless and invisible. We wouldn't care that it needed
+to reallocate, except here we have an unsafe pointer that is now invalid.
+Running the unsafe code under Miri (Rust's undefined behavior detector) reveals the problem:
+idx_295836ac
+error: Undefined Behavior: pointer to alloc1234 was dereferenced after
+this allocation got freed
+--> src/calculator.rs:42:24
+|
+42 |
+self.current.map(|ptr| unsafe { (*ptr).result })
+|^^^^^^^^^^^^^^^^ pointer to alloc1234 was
+|dereferenced after this allocation got freed
+Miri catches the dangling pointer that our tests might miss. This is why unsafe code is so
+dangerous. It can appear to work while silently causing memory corruption.
+It is not that difficult to write unsafe code that compiles, and it might even appear to work in
+testing. But it is surprisingly simple to introduce serious problems, and surprisingly difficult to
+see them. We tried to be extremely careful, but when we used unsafe, we bypassed the
+protection that the borrow checker had been providing us with. We are not safe against
+concurrent access. We're not safe if the pointer is null. We're using memory that could be
+accessed after being dropped.
+These are exactly the kinds of problems that the borrow checker was trying to prevent.
+idx_921c9a12
+Here, we discover why unsafe code is so unsafe. It is one thing to write code with bugs. But, in
+Rust, there are safety mechanisms, so even those bugs have to follow certain rules. That makes
+the set of things that buggy code can do understandable and limits the scope of the damage to
+what you can see in the code.91
+Don't Fight the Borrow Checker
+But unsafe can allow you to create undefined behavior (which is often called UB), which is on a
+different level. C and C++ programmers will likely be familiar with UB. When there is UB in the
+code, anything can happen. The program could appear to work, but do damage that shows up
+later, at a different time or place. UB can damage data that has nothing to do with the unsafe
+code, or corrupt almost any aspect of the code.
+One of the most commonly mentioned advantages of Rust is its safety, and that is exactly
+because it frees us from the worry of UB and makes even incorrect code understandable.
+Without UB, you can look at the code and determine what it is doing by reasoning about it.
+Once UB is in the picture, that ability to reason doesn't apply.
+Let's solve this properly by thinking about what we're really trying to achieve. We don't need a
+pointer to track our position. We just need to know where we are in history. An index does this
+perfectly:
+struct CalculatorState {
+expression: String,
+result: f64,
+}
+struct History {
+states: Vec<CalculatorState>,
+position: usize,
+}
+The History struct now uses a position index instead of a pointer. The index is just a number.
+It doesn't point to memory, so it can't become invalid when the Vec reallocates. We reuse the
+same CalculatorState struct since it was already well-designed.
+Let's implement the constructor and push method, which handle state management:
+impl History {
+fn new() -> Self {
+Self {
+states: Vec::new(),
+position: 0,
+}
+}
+fn push(&mut self, state: CalculatorState) {
+// When pushing after an undo, discard the "future" statesChapter 4
+92
+self.states.truncate(self.position);
+self.states.push(state);
+self.position = self.states.len();
+}
+}
+The constructor initializes an empty history with position 0. The push method handles a
+subtlety that our unsafe version ignored: when you push a new state after undoing, the future
+states should be discarded. This is standard undo/redo behavior. If you undo twice and then
+perform a new action, you can't redo to the discarded states. The truncate call handles this
+cleanly.
+idx_e8a7093f
+Now let's implement the navigation methods:
+fn current_result(&self) -> Option<f64> {
+if self.position > 0 {
+self.states.get(self.position - 1).map(|s| s.result)
+} else {
+None
+}
+}
+fn undo(&mut self) -> Option<f64> {
+if self.position > 1 {
+self.position -= 1;
+self.current_result()
+} else {
+None
+}
+}
+fn redo(&mut self) -> Option<f64> {
+if self.position < self.states.len() {
+self.position += 1;
+self.current_result()
+} else {
+None
+}
+}93
+Don't Fight the Borrow Checker
+The undo and redo methods simply adjust the position index. There's no pointer arithmetic, no
+unsafe blocks, and no possibility of accessing freed memory. The Vec can grow and reallocate
+as much as it wants, and our index remains valid. The current_result method uses safe
+bounds-checked access via get().
+This version has no UB because it is protected by compile-time checks. It uses safe Rust code
+that can't fail mysteriously. It's also easier to understand and more maintainable.
+What is critical to understand is that using unsafe wasn't solving our real problem. We didn't
+actually need pointers at all. We just needed a way to track our position in a sequence, which
+an integer does perfectly well. The unsafe approach was more complex, more dangerous, and
+didn't even handle redo-after-undo correctly.
+idx_5398432b
+There are legitimate uses for unsafe code in Rust, such as the following:
+•Interfacing with foreign functions
+•Implementing low-level optimizations
+•Creating safe abstractions around hardware
+•Building foundational data structures
+Writing unsafe Rust safely is very possible. There are excellent resources to help you
+understand how to successfully use unsafe, and they can teach us a lot that is very applicable
+to our Rust journey, including when not to use unsafe. But it needs to be used sparingly, and
+thoughtfully. "The borrow checker is being difficult" is almost never a good reason to use
+unsafe. If you find yourself reaching for unsafe to solve borrowing issues, it's usually a sign
+that you should reconsider your design instead.
+idx_5710be42
+Note
+Why care about being "harder to reason about"?
+You may have heard this phrase, particularly when discussing unsafe code and borrow
+checker workarounds. I often cite it in talking about patterns that don't fit and designs
+that are awkward, but almost always in the context of code that does work.
+Why am I putting so much emphasis on whether code is easy or difficult to "reason
+about"?
+As a friend of many years, whom I much admire, likes to say:
+"Debugging is twice as difficult as coding, so I code at half complexity. That way, I have
+some hope of debugging it."Chapter 4
+94
+Rust can feel very difficult sometimes. By now, you may even be asking, "Why am I
+putting myself through this? Coding seemed so much simpler before I began learning
+Rust."
+What you will find as you continue your journey is that Rust is guiding you toward code
+that can be reasoned about. When you do things the way that is most natural in Rust,
+typically, you have also designed something that you can understand. The data flow is
+clear. The ownership of things is explicit. You don't have to think about immutable
+data, because you know that it will not change. The places where state can change are
+clear, and these places are usually minimal. More often than not, you will find the bugs
+before they are bugs or not write them at all. When you are debugging, it will be much
+simpler to identify where the bugs are, why they are happening, and what to do about
+them.
+When the borrow checker is upset with you, or your code seems to be increasingly
+awkward to accomplish a task, think of it as Rust reminding you to write code that you
+can "reason about." Debugging is twice as difficult as writing code. When you fight the
+borrow checker with unsafe code or other workarounds, you're often making your
+future debugging task far more than twice as difficult. Let Rust help you to make it
+easier.
+In the next section, we'll examine another common attempt to avoid borrow checker issues:
+the overuse of global state and mutable statics. It's a tempting approach, but it often creates
+more problems than it solves.
+Over-using globals and mutable statics
+In this section, we'll discuss one more way that people learning Rust try to outwit the borrow
+checker: tricks involving global state and mutable static variables. As with many of the topics
+we've discussed, these absolutely have their uses. But using global statics reflexively to avoid
+borrow checker issues is not the answer it may seem to be.
+idx_3fdc8b05
+idx_a1ff0842
+As we have seen before, managing the flow of data is critical for working with Rust effectively.
+It can sometimes be difficult to manage references across a substantial code base. It can be
+even more difficult when some of that state needs to be mutable. The borrow checker will often
+express opinions on the matter, and care is needed to be able to manage mutable references
+throughout your code.
+But what if there was a way to bypass the whole issue?95
+Don't Fight the Borrow Checker
+One very common solution for people early in their Rust journey is to turn to global static
+variables. Crates such as LazyStatic and OnceCell provide a very useful way to dynamically
+initialize global statics (OnceCell was even eventually included in the standard library because
+it is so useful). Using constructs such as Mutex or RwLock can make it possible for these static
+globals to not only be initialized dynamically but also carry mutable state.
+Why put so much time and energy into data flows when the data can just stay where it is and
+be used everywhere?
+This seems like an excellent solution, but it can often turn out badly.
+Let's try it:
+•We'll create global static variables for the calculator memory and the variables
+•We'll initialize them with a Vec of numbers for the memory, and a HashMap to map
+variable names to numbers, but we will wrap them each in a Mutex so we can update
+them from anywhere
+•We can then write our calculator logic to store and evaluate numbers referring to the
+globals to get and update memory and variables
+•We won't have to worry about the flow of data, because the data is always accessible
+Let's implement that. We'll use lazy_static to create global Mutex-protected state for the
+calculator's memory and variables:
+idx_928d5123
+idx_dcfc2971
+use std::sync::Mutex;
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+lazy_static! {
+static ref MEMORY: Mutex<Vec<f64>> = Mutex::new(Vec::new());
+static ref VARIABLES: Mutex<HashMap<String, f64>> =
+Mutex::new(HashMap::new());
+}
+struct Calculator;
+impl Calculator {
+fn new() -> Self {
+Self
+}
+fn store_result(&self, result: f64) {Chapter 4
+96
+let mut memory = MEMORY.lock().unwrap();
+memory.push(result);
+}
+fn get_previous_result(&self, index: usize) -> Option<f64> {
+let memory = MEMORY.lock().unwrap();
+if index == 0 {
+memory.last().copied()
+} else {
+let pos = memory.len().checked_sub(index)?;
+memory.get(pos).copied()
+}
+}
+The Calculator struct is now empty, a "unit struct," because all state lives in the global statics.
+Every method must acquire a lock before accessing data, even for read-only operations such as
+get_previous_result. Notice the unwrap() calls on lock(). If a thread panics while holding
+the lock, subsequent lock attempts will also panic.
+idx_1bf83a03
+Let's see the evaluate method. It must acquire locks for both MEMORY and VARIABLES at
+different points:
+fn evaluate(&self, expression: &str) -> Result<f64, String> {
+if let Some((name, value_expr)) = expression.split_once('=') {
+let value = self.evaluate(value_expr.trim())?;
+let mut vars = VARIABLES.lock().unwrap();
+vars.insert(name.trim().to_string(), value);
+return Ok(value);
+}
+let result = self.parse_and_evaluate(expression)?;
+self.store_result(result);
+Ok(result)
+}
+fn parse_and_evaluate(&self, expression: &str) -> Result<f64, String> {
+let tokens = self.tokenize(expression)?;
+let mut resolved_tokens = Vec::new();
+for token in tokens {
+match token {
+idx_89c706d097
+Don't Fight the Borrow Checker
+Token::Variable(name) => {
+let vars = VARIABLES.lock().unwrap();
+let value = vars.get(&name)
+.ok_or_else(|| format!("Undefined variable: {}",
+name))?;
+resolved_tokens.push(Token::Number(*value));
+}
+token => resolved_tokens.push(token),
+}
+}
+self.evaluate_tokens(resolved_tokens)
+}
+}
+Notice how we acquire the VARIABLES lock inside the loop, once per variable reference. If an
+expression contains multiple variables, we're locking and unlocking repeatedly. Worse, if we
+needed to look up one variable whose value depends on another in the same expression, we
+could end up in complex locking patterns that risk deadlock. The global state has made our
+simple calculator surprisingly complex to reason about.
+idx_622a10c6
+idx_08e874e8
+idx_88de0b18
+idx_bf3fa720
+We should also write tests:
+use super::*;
+fn clear_memory() {
+let mut memory = MEMORY.lock().unwrap();
+memory.clear();
+}
+fn clear_variables() {
+let mut variables = VARIABLES.lock().unwrap();
+variables.clear();
+}
+#[test]
+fn test_calculator_results() -> Result<(), String> {
+clear_memory();
+clear_variables();
+let calc = Calculator::new();Chapter 4
+98
+calc.evaluate("x = 5")?;
+calc.evaluate("y = x + 3")?;
+assert_eq!(calc.evaluate("y")?, 8.0);
+Ok(())
+}
+#[test]
+fn test_interdependent_variables() -> Result<(), String> {
+clear_memory();
+clear_variables();
+let calc = Calculator::new();
+calc.evaluate("a = 1")?;
+calc.evaluate("b = a + 1")?;
+calc.evaluate("a = b + 1")?;
+assert_eq!(calc.evaluate("a")?, 3.0);
+Ok(())
+}
+As mentioned, in this implementation, the Calculator struct has just become a placeholder (a
+"unit struct") because we're storing the state in the global statics. Most of the operations are
+familiar, but one thing that should jump out is that, suddenly, we have to get locks for our data
+structures whenever we use them.
+idx_9825ae89
+idx_661e78f4
+This compiles, and it seems to work!
+However, when we think about the code more carefully, some issues become clear:
+•Testing is crucial for reliable software, but how do we test functions that depend on
+global state? To write tests, we would need to carefully set up and tear down state for
+each test. Worse, we have to be extremely careful about how the globals are initialized
+in our code so that we can handle working in production, but also running test cases.
+We are back to worrying about data flows, but in a clumsier way.
+•Working with the mutexes means that it is possible for there to be locking issues. We're
+acquiring locks multiple times in parse_and_evaluate. Earlier, we asked, what if we
+need to read one variable whose value depends on another? We realized that that could
+lead to a deadlock. Even if it doesn't, we are now managing locks that would not be
+needed if we weren't using global statics.99
+Don't Fight the Borrow Checker
+If we run multiple tests in parallel (which Rust does by default), we might see intermittent
+failures:
+thread 'test_calculator_results' panicked at 'assertion failed: `(left == right)`
+left: `5.0`,
+right: `8.0`', src/calculator.rs:799:5
+This happens because one test modified the global state while another was reading it. The
+failure is non-deterministic, making it extremely difficult to debug.
+idx_b2c918cb
+idx_26ec49ed
+Normally, it is extremely clear which functions could be modifying state and which functions
+may depend on that state. But with everything global, it's difficult to tell what depends on
+what, or whether functions might interfere with each other.
+Can we redesign this to avoid the mutable global statics? Let's try:
+struct Calculator {
+memory: Vec<f64>,
+variables: HashMap<String, f64>,
+}
+impl Calculator {
+fn new() -> Self {
+Self {
+memory: Vec::new(),
+variables: HashMap::new(),
+}
+}
+fn evaluate(&mut self, expression: &str) -> Result<f64, String> {
+if let Some((name, value_expr)) = expression.split_once('=') {
+let value = self.evaluate(value_expr.trim())?;
+self.variables.insert(name.trim().to_string(), value);
+return Ok(value);
+}
+let tokens = self.tokenize(expression)?;
+let resolved_tokens = self.resolve_variables(tokens)?;
+let result = self.evaluate_tokens(resolved_tokens)?;
+self.memory.push(result);
+Ok(result)Chapter 4
+100
+}
+fn resolve_variables(&self, tokens: Vec<Token>) -> Result<Vec<Token>, String>
+{
+tokens.into_iter()
+.map(|token| match token {
+Token::Variable(name) => {
+let value = self.variables.get(&name)
+.ok_or_else(|| format!("Undefined variable: {}",
+name))?;
+Ok(Token::Number(*value))
+}
+token => Ok(token),
+})
+.collect()
+}
+Here, we have thought more carefully about the flow and ownership of data. Now the
+movement of data through the calculator is much clearer, and ownership makes it clear when
+and where functions depend on (and can modify) that data.
+idx_9cd67c7c
+idx_b554cca9
+Writing tests now is also much clearer and simpler:
+use super::*;
+#[test]
+fn test_calculator() -> Result<(), String> {
+let mut calc = Calculator::new();
+calc.evaluate("x = 5")?;
+calc.evaluate("y = x + 3")?;
+assert_eq!(calc.evaluate("y")?, 8.0);
+Ok(())
+}
+#[test]
+fn test_interlocking_variables() -> Result<(), String> {
+let mut calc = Calculator::new();
+calc.evaluate("a = 1")?;101
+Don't Fight the Borrow Checker
+calc.evaluate("b = a + 1")?;
+calc.evaluate("a = b + 1")?;
+assert_eq!(calc.evaluate("a")?, 3.0);
+Ok(())
+}
+Globals and mutable static data, as with many things in Rust, are there for a reason. They are
+sometimes useful, or even necessary. However, they are not a substitute for careful thinking
+about ownership, sharing, and the flow of data. Used in their proper context, globals and
+shared statics can work around difficult issues. But when used carelessly, they can be the cause
+of issues.
+idx_d4cfd6f3
+idx_4bc6ec0e
+Summary
+In this chapter, we looked at fighting the borrow checker, and we talked about some common
+ways that developers try to do that, using our Bad Calculator project to illustrate these
+approaches and to explore alternatives.
+First, we explored why developers want to avoid the borrow checker, and how efforts to do so
+frequently turn out not to be as simple or helpful as they first appear.
+Then we talked about trying to use unsafe code to get around borrow checking, but that this
+can lead to danger and really doesn't buy us much. We saw that, except in specific
+circumstances, unsafe code rarely solves ownership problems effectively.
+Finally, we talked about trying to avoid thinking about data flows and ownership by creating
+static globals. We saw how this seems like it would simplify everything, but that it can have a
+price later in complexity and flexibility. We learned that, typically, global state creates more
+problems than it solves.
+We saw how each of these approaches, while tempting, typically leads to code that is harder to
+maintain, test, and debug. We also saw that the borrow checker's restrictions often guide us
+toward better designs, and that working with Rust's ownership system leads to clearer, more
+maintainable code.
+We examined how our calculator project could be implemented using these anti-patterns and
+then showed how to refactor it to work with Rust's ownership system rather than against it.
+When you encounter borrow checker errors, consider these guidelines:
+•
+Separate concerns by phase: parse first, then process, then store. Each phase should
+complete before the next begins.Chapter 4
+102
+•Use indices instead of references: when you need to refer to data with internal
+references, or data that may be mutating out from under you, store indices or keys
+rather than pointers or references.
+•Let data flow downward: structure your code so data flows from creation through
+processing to storage, minimizing the need for back-references.
+•Question whether you need interior mutability: if you're reaching for RefCell or
+Mutex just to make the compiler happy, your design likely needs rethinking.
+•Keep mutable state local: the smaller the scope of mutable data, the easier your code
+is to reason about.
+•Trust the borrow checker's feedback: when it complains, it's often revealing a design
+flaw. Listen to what it's telling you about your data dependencies.
+In the next chapter, we'll begin looking at how traditional design patterns translate into Rust,
+starting with the creational patterns. We'll be looking at what works and what doesn't, and we
+will see how to apply traditional patterns successfully. We'll also be starting a new project, the
+"Correct Calculator," where we will focus on working with Rust to make a high-quality
+application.

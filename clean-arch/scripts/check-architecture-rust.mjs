@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Architecture fitness function for Rust backends — the structural gate of the
- * self-audit (the Rust counterpart of check-architecture.ts).
+ * self-audit.
  *
  * Checks what rustc, clippy and Cargo cannot express: which crates a layer may
  * depend on, file naming per location, the shape of use cases, entities, value
@@ -9,13 +9,13 @@
  *
  * Run with:  node check-architecture-rust.mjs [--cwd=<backend-root>]
  *
- * Supports both layouts described in references/rust/workspace-layout.md:
+ * Supports both layouts described in references/architecture/workspace-layout.md:
  *   - workspace:     crates/{domain,usecase,infra,app}/src
  *   - single crate:  src/{domain,usecase,infra} + src/config.rs + src/main.rs
  *
  * Dependency-free (node: builtins only). Exits non-zero on any violation.
  *
- * The checks mirror `SKILL.md` § "Rust backends" and `references/rust/`. When
+ * The checks mirror `SKILL.md` and `references/architecture/`. When
  * changing the architecture, update this script and those documents together.
  */
 
@@ -41,6 +41,21 @@ const USECASE_FORBIDDEN_FOLDERS = new Set([
 ]);
 const ERROR_STATUSES =
   /StatusCode::(BAD_REQUEST|UNAUTHORIZED|FORBIDDEN|NOT_FOUND|CONFLICT|UNPROCESSABLE_ENTITY|INTERNAL_SERVER_ERROR)/;
+
+// Rule 19: a gate is fixed, never silenced. `#![expect(..)]` (config.rs) stays allowed.
+const SILENCED_LINT = /#!?\[\s*(?:allow\s*\(|rustfmt::skip\b|cfg_attr\s*\([^\]]*?\ballow\s*\()/;
+// Shared mutable state belongs inside an infra adapter, never in domain / usecase.
+const INTERIOR_MUTABILITY =
+  /\b(?:Rc|RefCell|Cell|Mutex|RwLock|OnceCell)\s*<|\b(?:std|core|alloc)::(?:rc::Rc|cell::(?:RefCell|Cell|OnceCell)|sync::(?:Mutex|RwLock))\b/;
+// Global mutable state or a global dependency (rule 11). A static `LazyLock<Regex>` is fine.
+const GLOBAL_STATE = [
+  [/\bstatic\s+mut\b/, '`static mut`'],
+  [/\blazy_static\s*!/, '`lazy_static!`'],
+  [/\bthread_local\s*!/, '`thread_local!`'],
+  [/\bstatic\s+\w+\s*:\s*(?:[\w:]*::)?(?:Mutex|RwLock)\s*</, 'a `static` lock'],
+  [/\bstatic\s+\w+\s*:\s*(?:[\w:]*::)?(?:OnceLock|OnceCell|LazyLock|Lazy)\s*<[^;=]*?(?:Config|Settings|Pool|Client|Connection|Mutex|RwLock)/,
+    'a `static` holding a config, pool, client or lock'],
+];
 
 const SNAKE = /^[a-z][a-z0-9_]*$/;
 const norm = (crateName) => crateName.replace(/-/g, '_');
@@ -174,6 +189,9 @@ export function checkArchitecture(rootDir) {
           report(crate(layer), 'crate-deps', `\`${layer}\` must not depend on \`${target}\`. Dependencies point inward only.`);
         }
       }
+      if (deps.includes('anyhow')) {
+        report(crate(layer), 'anyhow-only-in-app', `\`${layer}\` must not depend on \`anyhow\`. Use typed errors (\`AppError\`, feature enums); \`anyhow\` belongs to \`app\` only.`);
+      }
       if (layer === 'infra') continue;
       for (const io of IO_CRATES) {
         if (deps.includes(norm(io))) {
@@ -223,6 +241,36 @@ export function checkArchitecture(rootDir) {
       if (resolve(file) === resolve(layout.config)) continue;
       if (ENV.test(productionCode(file))) {
         report(file, 'env-outside-config', `Read the environment only in ${posix(relative(root, layout.config))}; pass values in through constructors.`);
+      }
+    }
+  }
+
+  // ── Rule: no silenced lints, no global state (all production code) ─────────
+  for (const file of layout.sources) {
+    const src = productionCode(file);
+    if (SILENCED_LINT.test(src)) {
+      report(file, 'no-silenced-lint', 'Do not silence a gate with `#[allow(..)]` or `#[rustfmt::skip]` (rule 19). Fix the code; if the gate seems wrong, ask.');
+    }
+    const global = GLOBAL_STATE.find(([rx]) => rx.test(src));
+    if (global) {
+      report(file, 'no-global-state', `Global state (${global[1]}). Build dependencies in the composition root and pass them through constructors (rule 11).`);
+    }
+  }
+
+  // ── Rule: anyhow only in the binary (source; the manifest is checked above) ─
+  for (const [layer, layerRoot] of [['domain', domain], ['usecase', usecase], ['infra', infra]]) {
+    for (const file of layerFiles(layerRoot)) {
+      if (/(?<![A-Za-z0-9_:])anyhow(?:::|!)/.test(productionCode(file))) {
+        report(file, 'anyhow-only-in-app', `\`${layer}\` must not use \`anyhow\`. Return typed errors (\`AppError\`, feature enums); \`anyhow\` belongs to \`app\` only.`);
+      }
+    }
+  }
+
+  // ── Rule: no interior mutability in domain / usecase ───────────────────────
+  for (const [layer, layerRoot] of [['domain', domain], ['usecase', usecase]]) {
+    for (const file of layerFiles(layerRoot)) {
+      if (INTERIOR_MUTABILITY.test(productionCode(file))) {
+        report(file, 'no-interior-mutability', `\`${layer}\` must not use Rc / RefCell / Cell / Mutex / RwLock. Mutate through \`&mut self\`; shared state lives inside an infra adapter behind a port.`);
       }
     }
   }
@@ -351,6 +399,16 @@ export function checkArchitecture(rootDir) {
       if (/^(list|search)_/.test(name) && !/\bPageInput\b/.test(src)) {
         report(file, 'list-page-input', 'List/Search use case input must carry `PageInput`.');
       }
+      if (/\bpub\s+struct\s+\w+UseCase\s*</.test(src)) {
+        report(file, 'usecase-generic-ports', 'A use case is not generic over its ports. Hold `Arc<dyn Port>` fields so handlers never name the adapter.');
+      }
+      if (/\bfn\s+execute\s*(?:<[^>]*>)?\s*\(\s*&\s*(?:'\w+\s+)?mut\s+self\b/.test(src)) {
+        report(file, 'usecase-stateless', 'A use case is stateless and shared as `Arc<UseCase>`: `execute(&self, input)`, never `&mut self`.');
+      }
+      const others = [...new Set([...src.matchAll(/\b(\w+UseCase)\b/g)].map((m) => m[1]))].filter((n) => !structs.includes(n));
+      if (others.length > 0) {
+        report(file, 'usecase-no-composition', `Use cases do not compose (found ${others.join(', ')}). Move shared logic into the domain or behind a port.`);
+      }
     }
   }
 
@@ -368,13 +426,30 @@ export function checkArchitecture(rootDir) {
       if (/\bpub\s+(?:const\s+)?fn\s+set_\w+/.test(src)) {
         report(file, 'no-setters-in-domain', 'domain may not expose `set_*` methods. Use a method named after the business operation.');
       }
+      if (/\bimpl\s*(?:<[^>]*>\s*)?(?:[\w:]*::)?Deref(?:Mut)?\s+for\b/.test(src)) {
+        report(file, 'no-deref-in-domain', 'Domain types do not implement Deref / DerefMut: it re-exposes the inner type\'s whole API. Add an accessor (`as_str`, `value`).');
+      }
+      if ((name.endsWith('_entity.rs') || name.endsWith('_vo.rs')) &&
+          (/derive\s*\([^)]*\bDefault\b/.test(src) || /\bimpl\s*(?:<[^>]*>\s*)?(?:[\w:]*::)?Default\s+for\b/.test(src))) {
+        report(file, 'no-default-entity-vo', 'Entities and value objects never implement Default: a default entity skipped `create`, a default value object skipped validation.');
+      }
       if (name.endsWith('_entity.rs')) {
         if (publicField(src)) report(file, 'entity-private-fields', 'Entity fields must be private; expose read-only getters.');
         if (!has(src, 'create')) report(file, 'entity-create-factory', 'Entity must define `pub fn create(...)`.');
         if (!has(src, 'restore')) report(file, 'entity-restore-factory', 'Entity must define `pub fn restore(...)` for rehydration from persistence.');
         if (serde(src)) report(file, 'entity-not-serializable', 'Entities never derive Serialize/Deserialize. Map to an Output DTO in the use case.');
       }
+      if (/_(repository|queries|gateway)\.rs$/.test(name)) {
+        for (const m of src.matchAll(/\bpub\s+trait\s+(\w+)([^{]*)\{/g)) {
+          if (!/\bSend\b/.test(m[2]) || !/\bSync\b/.test(m[2])) {
+            report(file, 'port-send-sync', `Port \`${m[1]}\` must require \`Send + Sync\`: it is shared across tasks as \`Arc<dyn ${m[1]}>\`.`);
+          }
+        }
+      }
       if (name.endsWith('_vo.rs')) {
+        if (/\bimpl\s*(?:<[^>]*>\s*)?(?:[\w:]*::)?From\s*<\s*(?:&\s*(?:'\w+\s+)?)?(?:[\w:]*::)?(?:String|str)\s*>\s*for\b/.test(src)) {
+          report(file, 'vo-no-infallible-from', 'A value object has no infallible `From<String>` / `From<&str>`: it would bypass `create`. Use `create` or `TryFrom`.');
+        }
         if (publicField(src)) report(file, 'vo-private-fields', 'Value object fields must be private.');
         if (!has(src, 'create')) report(file, 'vo-create-factory', 'Value object must define `pub fn create(...)` that validates its input.');
         if (serde(src)) report(file, 'vo-not-serializable', 'Value objects never derive Serialize/Deserialize — Deserialize would bypass `create`.');

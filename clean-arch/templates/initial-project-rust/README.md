@@ -2,7 +2,7 @@
 
 A Cargo workspace laid out per the `clean-arch` skill (`~/.claude/skills/clean-arch/`): one crate per layer, **axum + sqlx + PostgreSQL**, and one worked feature (`user`) to copy the shapes from.
 
-Read `~/.claude/skills/clean-arch/SKILL.md` § "Rust backends" for the prescription and `references/rust/` for depth. Read this project's `CLAUDE.md` for project-specific addenda.
+Read `~/.claude/skills/clean-arch/SKILL.md` for the prescription and `references/architecture/` for depth. Read this project's `CLAUDE.md` for project-specific addenda.
 
 ## Quick start
 

@@ -4,17 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
 const SKILL_SCRIPTS = dirname(fileURLToPath(import.meta.url));
-
-const TYPESCRIPT_GATES = [
-  ["TypeScript", NPX, ["tsc", "--noEmit", "-p", "tsconfig.json"]],
-  ["ESLint", NPX, ["eslint", ".", "--max-warnings=0"]],
-  ["Dependency Cruiser", NPX, ["depcruise", "src", "--config", ".dependency-cruiser.cjs"]],
-  ["Architecture", NPX, ["tsx", "scripts/check-architecture.ts"]],
-  ["Madge", NPX, ["madge", "--circular", "--extensions", "ts", "--json", "src"]],
-  ["Knip", NPX, ["knip"]],
-];
 
 const RUST_GATES = [
   ["Rustfmt", "cargo", ["fmt", "--all", "--", "--check"]],
@@ -28,11 +18,7 @@ function resolveTargetDir() {
 
   const cwd = process.cwd();
   const candidates = [cwd, resolve(cwd, "apps/backend"), resolve(cwd, "backend")];
-  return candidates.find((dir) => looksLikeCleanArchProject(dir) || looksLikeRustProject(dir)) ?? cwd;
-}
-
-function looksLikeCleanArchProject(dir) {
-  return existsSync(resolve(dir, "src")) && existsSync(resolve(dir, "tsconfig.json"));
+  return candidates.find((dir) => looksLikeRustProject(dir)) ?? cwd;
 }
 
 function looksLikeRustProject(dir) {
@@ -46,8 +32,6 @@ function commandLine(command, args) {
 
 function runGate(targetDir, [name, command, args]) {
   console.log(`\n[clean-arch:gates] ${name}: ${commandLine(command, args)}`);
-  if (name === "Madge") return runMadgeGate(targetDir, name, command, args);
-
   const result = spawnSync(command, args, {
     cwd: targetDir,
     stdio: "inherit",
@@ -56,45 +40,6 @@ function runGate(targetDir, [name, command, args]) {
     console.error(`[clean-arch:gates] ${name} failed to start: ${result.error.message}`);
   }
   return { name, status: result.status ?? 1 };
-}
-
-function runMadgeGate(targetDir, name, command, args) {
-  const result = spawnSync(command, args, {
-    cwd: targetDir,
-    encoding: "utf8",
-  });
-  if (result.error) {
-    console.error(`[clean-arch:gates] ${name} failed to start: ${result.error.message}`);
-    return { name, status: 1 };
-  }
-  if (result.stderr) process.stderr.write(result.stderr);
-  if (result.status !== 0) {
-    if (result.stdout) process.stdout.write(result.stdout);
-    return { name, status: result.status ?? 1 };
-  }
-
-  const cycles = parseMadgeCycles(result.stdout, name);
-  if (!cycles) return { name, status: 1 };
-  if (cycles.length === 0) {
-    console.log("✓ madge: no circular dependency found");
-    return { name, status: 0 };
-  }
-
-  console.error("[clean-arch:gates] Circular dependencies found:");
-  for (const cycle of cycles) console.error(`  - ${cycle.join(" -> ")}`);
-  return { name, status: 1 };
-}
-
-function parseMadgeCycles(output, gateName) {
-  try {
-    const parsed = JSON.parse(output.trim() || "[]");
-    if (Array.isArray(parsed)) return parsed;
-  } catch (error) {
-    console.error(`[clean-arch:gates] ${gateName} returned invalid JSON: ${error.message}`);
-    return null;
-  }
-  console.error(`[clean-arch:gates] ${gateName} returned an unexpected JSON shape.`);
-  return null;
 }
 
 function summarize(results) {
@@ -112,6 +57,13 @@ function summarize(results) {
 }
 
 const targetDir = resolveTargetDir();
-const gates = looksLikeRustProject(targetDir) ? RUST_GATES : TYPESCRIPT_GATES;
 console.log(`[clean-arch:gates] cwd: ${targetDir}`);
-process.exitCode = summarize(gates.map((gate) => runGate(targetDir, gate)));
+if (!looksLikeRustProject(targetDir)) {
+  console.error(
+    "[clean-arch:gates] No Rust backend found: expected a Cargo.toml next to crates/domain or src/domain " +
+      "(in the cwd, apps/backend or backend). Run from the backend root or pass --cwd=<backend-path>.",
+  );
+  process.exitCode = 1;
+} else {
+  process.exitCode = summarize(RUST_GATES.map((gate) => runGate(targetDir, gate)));
+}

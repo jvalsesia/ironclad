@@ -67,7 +67,7 @@ deps_of() {
 # Commands a skill shells out to.
 tools_of() {
     case "$1" in
-        clean-arch)                  echo "node" ;;
+        clean-arch)                  echo "node cargo" ;;
         implement-and-evaluate)      echo "git gh" ;;
         implement-and-evaluate-tmux) echo "tmux git claude" ;;
     esac
@@ -267,7 +267,7 @@ else
         done
     done
     if has_word "$selected" "clean-arch" && [ "$dest" != "$HOME/.claude/skills" ]; then
-        warn "clean-arch's templates and linter docs point at ~/.claude/skills/clean-arch; those commands only resolve if it is installed there too"
+        warn "clean-arch's templates and docs point at ~/.claude/skills/clean-arch; those commands only resolve if it is installed there too"
     fi
 fi
 

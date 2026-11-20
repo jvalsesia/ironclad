@@ -1,1 +1,0 @@
--- Initial empty migration for database-enabled clean-arch scaffold.
