@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — installs the mba-skills collection into a Claude Code skills directory.
+# install.sh — installs the ironclad collection into a Claude Code skills directory.
 #
 #   ./install.sh                        every skill, symlinked into ~/.claude/skills
 #   ./install.sh clean-arch evaluator   just these, plus the skills they invoke
@@ -15,9 +15,9 @@
 
 set -euo pipefail
 
-REPO_URL="${MBA_SKILLS_REPO:-https://github.com/jvalsesia/mba-skills.git}"
-CLONE_DIR="${MBA_SKILLS_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/mba-skills}"
-MARKER=".mba-skills-install"
+REPO_URL="${IRONCLAD_REPO:-https://github.com/jvalsesia/ironclad.git}"
+CLONE_DIR="${IRONCLAD_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ironclad}"
+MARKER=".ironclad-install"
 
 usage() {
     cat <<EOF
@@ -41,9 +41,9 @@ Options:
   -h, --help       show this help
 
 Environment:
-  MBA_SKILLS_REPO  repo to clone when run outside a checkout
+  IRONCLAD_REPO    repo to clone when run outside a checkout
                    (default: $REPO_URL)
-  MBA_SKILLS_HOME  where that clone lives
+  IRONCLAD_HOME    where that clone lives
                    (default: $CLONE_DIR)
 EOF
 }

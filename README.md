@@ -1,4 +1,4 @@
-# mba-skills
+# ironclad
 
 Claude Code skills for taking a product from an idea to merged pull requests: write the PRD, spec each feature, implement it, verify it against a behavior contract, and fix what fails. A separate skill keeps Rust backends on a strict Clean Architecture layout.
 
@@ -42,8 +42,8 @@ Each `SKILL.md` documents its full input grammar, overrides and edge cases.
 Clone the repo and run the installer:
 
 ```bash
-git clone git@github.com:jvalsesia/mba-skills.git
-cd mba-skills
+git clone git@github.com:jvalsesia/ironclad.git
+cd ironclad
 ./install.sh
 ```
 
@@ -66,10 +66,10 @@ Things to know:
 - **`--project` copies by default.** A symlink committed to a project would point at a path that exists only on your machine. `--link` overrides this.
 - **`clean-arch` expects `~/.claude/skills`.** Its templates and docs reference `~/.claude/skills/clean-arch/`, so those commands only resolve when it is installed there.
 
-Without a checkout, the installer clones the repo into `~/.local/share/mba-skills` and installs from that clone. The repo is private, so fetch the script through an authenticated `gh`:
+Without a checkout, the installer clones the repo into `~/.local/share/ironclad` and installs from that clone. The repo is private, so fetch the script through an authenticated `gh`:
 
 ```bash
-gh api repos/jvalsesia/mba-skills/contents/install.sh \
+gh api repos/jvalsesia/ironclad/contents/install.sh \
   -H 'Accept: application/vnd.github.raw' | bash
 ```
 
