@@ -85,6 +85,7 @@ backend/
       repository/user/           # pg_user_repository.rs, in_memory_user_repository.rs, user_row.rs
       queries/user/              # pg_user_queries.rs, in_memory_user_queries.rs
       gateway/  persistence/
+      messaging/                 # opt-in: broker producers, consumers, outbox relay (messaging.md)
     app/src/                     # main.rs (composition root), config.rs (only env reader)
 ```
 
@@ -115,7 +116,7 @@ Full trees, `Cargo.toml` per crate and the facade rules: `references/architectur
 6. **Domain is rich**: entities have private fields, `pub fn create` (applies creation rules) and `pub fn restore` (rehydrates from persistence without re-running them), `&mut self` methods named after the business operation (`suspend()`, `rename(title)`), and read-only getters. **No `pub` field, no `set_*`, ever.**
 7. **Value objects are self-validating**: private field, `create(..) -> Result<Self, FeatureError>`, `from_trusted` for rehydration, an accessor, `PartialEq`.
 8. **IDs are generated in the domain** via `Id::<T>::generate()`. Each aggregate has a phantom-typed alias (`pub type UserId = Id<User>`) so IDs of different aggregates are different types.
-9. **Domain may use libraries, never I/O**: validation, date (`chrono`) and numeric crates are fine inside VOs and entities. I/O crates (`sqlx`, `axum`, `reqwest`, `tokio`, …) and `std::fs`/`std::net`/`std::process`/`std::env` are forbidden in `domain` and `usecase`.
+9. **Domain may use libraries, never I/O**: validation, date (`chrono`) and numeric crates are fine inside VOs and entities. I/O crates (`sqlx`, `axum`, `reqwest`, `tokio`, broker clients such as `rdkafka` and `lapin`, …) and `std::fs`/`std::net`/`std::process`/`std::env` are forbidden in `domain` and `usecase`.
 
 ### Use Cases
 
@@ -247,7 +248,7 @@ From a monorepo root the helper auto-detects `apps/backend` or `backend`; otherw
 
 1. `cargo fmt --all -- --check` — formatting.
 2. `cargo clippy --workspace --all-targets -- -D warnings` — compiles everything; denies `unwrap`, `expect`, `todo!`, `dbg!` outside tests, `unsafe`, and `std::env::var` outside `config.rs`.
-3. `node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs` — crate dependencies, I/O crates in `domain`/`usecase`, naming per location, use case / entity / VO / handler shapes, in-memory fakes, `shared` whitelist, `mod.rs` facades, silenced lints (`#[allow]`, `#[rustfmt::skip]`), global state, `Rc`/`RefCell`/`Mutex` in `domain`/`usecase`, generic / `&mut self` / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app`.
+3. `node ~/.claude/skills/clean-arch/scripts/check-architecture-rust.mjs` — crate dependencies, I/O crates in `domain`/`usecase`, naming per location, use case / entity / VO / handler / consumer shapes, in-memory fakes, `shared` whitelist, `mod.rs` facades, silenced lints (`#[allow]`, `#[rustfmt::skip]`), global state, `Rc`/`RefCell`/`Mutex` in `domain`/`usecase`, generic / `&mut self` / composed use cases, `Deref` and `Default` in the domain, infallible `From<String>` on value objects, ports without `Send + Sync`, `anyhow` outside `app`.
 
 Cargo already rejects cross-layer and circular crate dependencies, and clippy includes the type check, so three gates cover the rules. **`git commit --no-verify`, `git push --no-verify` and `#[allow(..)]` to quiet a gate are forbidden.** If a gate fails, fix the code. If you genuinely believe the gate itself is wrong, stop and ask the user — do not bypass.
 
@@ -261,6 +262,7 @@ For the concrete layout, rules and shapes, load the relevant file from `referenc
 - **`domain-modeling.md`** — entities, value objects, `Id<T>`, `AppError` / `ErrorKind`, per-feature error enums, what `domain` may depend on.
 - **`use-cases-and-ports.md`** — use case shape, DTOs, why `Arc<dyn Trait>`, repository / queries / gateway traits, authorization, pagination, tests, multiple writes.
 - **`infra-axum-sqlx.md`** — handlers, extractors, the central `HttpError` mapper, routes, authentication, sqlx repositories and row mapping, in-memory fakes, composition root, config.
+- **`messaging.md`** — opt-in: domain events, the transactional outbox, Kafka (`rdkafka`), RabbitMQ (`lapin`), NATS JetStream (`async-nats`) and SQS (`aws-sdk-sqs`) producers, consumers and the ack / retry / dead-letter mapper, idempotency.
 - **`anti-patterns.md`** — violations to actively avoid and which gate catches each.
 
 For language idioms and design patterns adapted to Rust (the reasoning behind the rules, with where each pattern does and does not belong), load from `references/rust-patterns/`. Start with `thinking-in-rust.md`:

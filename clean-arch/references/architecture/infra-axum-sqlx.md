@@ -400,3 +400,4 @@ impl Config {
 
 - `use-cases-and-ports.md` — the traits implemented here.
 - `domain-modeling.md` — `AppError`, `restore`, `from_trusted`.
+- `messaging.md` — the outbox written inside `save`, broker producers, and consumers (the inbound twin of handlers).

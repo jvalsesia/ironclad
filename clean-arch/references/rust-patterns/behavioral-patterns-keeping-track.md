@@ -7,7 +7,7 @@ How Iterator, State, Memento, Observer and Visitor map onto this skill's layers.
 | Iterator | The `Iterator` trait and combinators | Inside the domain and infra. At a port boundary return `Vec` / `PageOutput`, not a lazy iterator |
 | State | A closed `enum` with transition methods; `Box<dyn State>` only if the set is open | The **status** of an entity (`Draft → Published`), transitions as `&mut self` methods returning `Result` |
 | Memento | A snapshot struct, `Clone` | The `FeatureSnapshot` for `restore`; persisted as a **row**, never by serializing the entity |
-| Observer | Events + channels | **Domain events** published through a port, handled after `save`. No in-process `Vec<Box<dyn Observer>>` |
+| Observer | Events + channels | **Domain events** recorded by the entity, written to the outbox by `save`, handled by consumers. No in-process `Vec<Box<dyn Observer>>` |
 | Visitor | `enum` + `match` (a visitor is just a function) | Functions over a closed enum; the double-dispatch machinery is unnecessary |
 
 Related: `behavioral-patterns-actions.md` (Command, Mediator, Strategy), `structural-patterns.md` (Composite as an enum), `designing-for-rust-not-oo.md`, `borrow-checker-as-design-feedback.md`.
@@ -128,37 +128,39 @@ The book adds `#[derive(Serialize, Deserialize)]` to the memento and writes it t
 The pattern keeps a subject ignorant of who reacts. In this stack the same goal is reached with **domain events** and a publisher port, not a `Vec<Box<dyn Observer>>` the subject owns.
 
 ```rust
-// domain/shared/event.rs (whitelisted) or the feature's own file: plain data
-#[derive(Debug, Clone)]
+// domain/user/events.rs: plain data
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserEvent {
     Registered { user_id: UserId },
     Suspended  { user_id: UserId },
 }
 
-// domain: the port
-#[async_trait]
-pub trait EventPublisher: Send + Sync {
-    async fn publish(&self, event: UserEvent) -> Result<(), AppError>;
+// domain/user/user_entity.rs: the subject records, it does not notify
+pub fn suspend(&mut self) -> Result<(), UserError> {
+    /* invariant check, state change */
+    self.record(UserEvent::Suspended { user_id: self.id });
+    Ok(())
 }
 ```
 
 ```rust
-// usecase: save first, then publish
+// usecase: unchanged; `save` writes the row and the outbox entry in one transaction
+user.suspend()?;
 self.user_repo.save(&user).await?;
-self.events.publish(UserEvent::Suspended { user_id: user.id() }).await?;
 ```
+
+Where each piece lives (envelope, outbox, relay, broker producers, consumers) is in `../architecture/messaging.md`; this section is the pattern.
 
 ### Rules
 
 - **Events are data.** Ids and facts; no entity references, no closures, no `Arc<Mutex<…>>`.
-- **Publish after a successful `save`.** Never before: an event for a state that was never persisted is a lie.
-- **Atomicity:** if "save and publish" must be all-or-nothing, write the event to an **outbox table in the same `save` transaction** and let a worker publish it. A second write from the use case after the first has no such guarantee, and the use case must not open the transaction (`../architecture/use-cases-and-ports.md` § 9; a Unit of Work needs the user's agreement first).
-- **Observers live in `infra` or `app`**, registered in `main.rs`. The subject (a use case) knows only the `EventPublisher` port.
+- **Recorded with the change, published after the commit.** The event is written to the **outbox in the same `save` transaction** and a relay publishes it, so an event never exists for a state that was not persisted, and a persisted state never loses its event. Calling a broker from the use case after `save` has neither guarantee (`../architecture/messaging.md` § 4).
+- **Observers live in `infra` or `app`**, wired in `main.rs`: a broker consumer (`messaging.md` § 8) or an in-process subscriber. The subject (the entity, through the use case) knows none of them.
 - **In-process fan-out uses channels** (`tokio::sync::mpsc` or `broadcast`), not a list of observers behind a lock. The subject sends; each observer receives on its own task. No shared mutable state, no lock held while an observer runs.
 - **Observers do not fail the request.** A handler error is logged and retried by the worker; it does not turn the HTTP response into a 500 after the write has succeeded. Do not `unwrap()` a lock or a send (rule 19).
 - **`&self` observers** (the book's choice) are right: take `&self`, keep any mutable state behind a lock inside the observer.
 - **Watch cascades.** An observer that triggers another event can loop; keep handlers idempotent and keep the chain shallow.
-- **In-memory fake** for tests: an `InMemoryEventPublisher` that records events in a `Mutex<Vec<_>>`, kept behaviorally in step like the repository fakes.
+- **Tests assert on recorded events**: the in-memory repository keeps the events it was asked to save, so a use case test checks that `execute` emitted `UserEvent::Suspended`.
 
 ### Not the same as the Mediator
 
@@ -215,7 +217,7 @@ Only for an **open** hierarchy of trait objects where you must add both new elem
 3. **Entity with a lifecycle?** → a status `enum` and one `&mut self` method per transition, returning a feature error on an illegal one.
 4. **States open to extension?** → trait objects, transitions as data. Otherwise `enum`.
 5. **Need to save or restore state?** → `FeatureSnapshot` + `restore`; persist via a row; never serialize the entity; never clone the aggregate to keep a copy.
-6. **Something must react to a change?** → a domain event through a port, published after `save`; an outbox if it must be atomic; channels for in-process fan-out.
+6. **Something must react to a change?** → the entity records a domain event, `save` writes it to the outbox, a consumer reacts (`../architecture/messaging.md`); channels for in-process fan-out.
 7. **New operation over a tree?** → a function with an exhaustive `match`. A visitor trait only for an open hierarchy.
 
 ---

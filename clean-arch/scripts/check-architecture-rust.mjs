@@ -29,6 +29,8 @@ const IO_CRATES = [
   'sqlx', 'diesel', 'sea-orm', 'tokio-postgres', 'rusqlite', 'mongodb', 'redis',
   'axum', 'actix-web', 'warp', 'rocket', 'hyper', 'tower', 'tower-http',
   'reqwest', 'ureq', 'tokio',
+  // message brokers (references/architecture/messaging.md)
+  'rdkafka', 'lapin', 'async-nats', 'aws-sdk-sqs', 'aws-sdk-sns', 'aws-config',
 ];
 const IO_STD_MODULES = ['std::fs', 'std::net', 'std::process', 'std::env'];
 
@@ -345,8 +347,8 @@ export function checkArchitecture(rootDir) {
     for (const feature of subdirs(domain).filter((d) => d !== 'shared')) {
       checkDir(
         join(domain, feature),
-        [/_entity\.rs$/, /_vo\.rs$/, /_repository\.rs$/, /_queries\.rs$/, /_gateway\.rs$/, /^errors\.rs$/, /^events\.rs$/],
-        '*_entity.rs, *_vo.rs, *_repository.rs, *_queries.rs, *_gateway.rs, errors.rs, events.rs',
+        [/_entity\.rs$/, /_vo\.rs$/, /_repository\.rs$/, /_queries\.rs$/, /_gateway\.rs$/, /_publisher\.rs$/, /^errors\.rs$/, /^events\.rs$/],
+        '*_entity.rs, *_vo.rs, *_repository.rs, *_queries.rs, *_gateway.rs, *_publisher.rs, errors.rs, events.rs',
       );
     }
 
@@ -367,6 +369,20 @@ export function checkArchitecture(rootDir) {
       checkDir(join(infra, 'http', feature), [/_handler\.rs$/, /_routes\.rs$/], '*_handler.rs, *_routes.rs');
     }
     checkDir(join(infra, 'gateway'), [/_gateway\.rs$/], '<provider>_<concept>_gateway.rs');
+    // infra/messaging/ root holds broker plumbing (producers, subscribers, relay); features are checked.
+    for (const feature of subdirs(join(infra, 'messaging'))) {
+      checkDir(join(infra, 'messaging', feature), [/_publisher\.rs$/, /_consumer\.rs$/, /_message\.rs$/], '*_publisher.rs, in_memory_*_publisher.rs, *_consumer.rs, <feature>_message.rs');
+    }
+  }
+
+  // ── Rule: every event publisher implementation has an in-memory fake ───────
+  for (const feature of subdirs(join(infra, 'messaging'))) {
+    const dir = join(infra, 'messaging', feature);
+    const impls = rustFilesIn(dir).filter((n) => n.endsWith('_publisher.rs'));
+    const real = impls.filter((n) => !n.startsWith('in_memory_'));
+    if (real.length > 0 && real.length === impls.length) {
+      report(join(dir, real[0]), 'missing-in-memory-publisher', `Missing fake: in_memory_${feature}_event_publisher.rs next to it. Every implementation needs an in-memory counterpart.`);
+    }
   }
 
   // ── Rule: every repository / queries implementation has an in-memory fake ──
@@ -439,7 +455,7 @@ export function checkArchitecture(rootDir) {
         if (!has(src, 'restore')) report(file, 'entity-restore-factory', 'Entity must define `pub fn restore(...)` for rehydration from persistence.');
         if (serde(src)) report(file, 'entity-not-serializable', 'Entities never derive Serialize/Deserialize. Map to an Output DTO in the use case.');
       }
-      if (/_(repository|queries|gateway)\.rs$/.test(name)) {
+      if (/_(repository|queries|gateway|publisher)\.rs$/.test(name)) {
         for (const m of src.matchAll(/\bpub\s+trait\s+(\w+)([^{]*)\{/g)) {
           if (!/\bSend\b/.test(m[2]) || !/\bSync\b/.test(m[2])) {
             report(file, 'port-send-sync', `Port \`${m[1]}\` must require \`Send + Sync\`: it is shared across tasks as \`Arc<dyn ${m[1]}>\`.`);
@@ -470,6 +486,23 @@ export function checkArchitecture(rootDir) {
       }
       if (/\bErr\s*\(/.test(src) || /\.map_err\s*\(/.test(src) || ERROR_STATUSES.test(src)) {
         report(file, 'handler-no-error-mapping', 'Handlers never build or map errors. Return `Result<_, HttpError>`, use `?`, and let the central mapper pick the status.');
+      }
+    }
+  }
+
+  // ── Rule: consumers are one async fn and never map errors themselves ───────
+  for (const feature of subdirs(join(infra, 'messaging'))) {
+    for (const name of rustFilesIn(join(infra, 'messaging', feature))) {
+      if (!name.endsWith('_consumer.rs')) continue;
+      const file = join(infra, 'messaging', feature, name);
+      const src = productionCode(file);
+      const expected = name.slice(0, -3);
+      const fns = [...src.matchAll(/\bpub\s+(?:async\s+)?fn\s+(\w+)/g)].map((m) => m[1]);
+      if (fns.length !== 1 || fns[0] !== expected || !new RegExp(`\\bpub\\s+async\\s+fn\\s+${expected}\\b`).test(src)) {
+        report(file, 'consumer-shape', `A consumer file exposes exactly one \`pub async fn ${expected}\`. Found: [${fns.join(', ') || 'none'}].`);
+      }
+      if (/\bErr\s*\(/.test(src) || /\.map_err\s*\(/.test(src)) {
+        report(file, 'consumer-no-error-mapping', 'Consumers never build or map errors. Return `Result<(), ConsumeError>`, use `?`, and let `disposition.rs` decide ack, retry or dead-letter.');
       }
     }
   }

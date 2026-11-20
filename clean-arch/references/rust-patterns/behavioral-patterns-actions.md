@@ -117,19 +117,24 @@ What this skill uses instead:
 |---|---|
 | Coordinate several collaborators for one operation | The **use case**. It holds the ports it needs and calls them in order (`../architecture/use-cases-and-ports.md` § 1). That is its job |
 | Decide which concrete parts exist and connect them | The **composition root** in `main.rs`: builds adapters once, injects them (rule 11) |
-| Let part A react when part B changes, without B knowing A | A **domain event**: the aggregate records an event; after `save`, an application-level handler (or a job) reacts. The event type lives in `domain/shared/event.rs` (on the whitelist) |
+| Let part A react when part B changes, without B knowing A | A **domain event**: the aggregate records it, the repository's `save` writes it to the outbox, and a consumer reacts. The event type lives in `domain/<feature>/events.rs`; the `Recorded<E>` envelope in `domain/shared/event.rs` (`../architecture/messaging.md`) |
 | Share read-only state | `Arc<Config>`, a port; no mediator "get_variable" accessors |
 
 ### Events, not callbacks
 
 ```rust
-// domain (in the aggregate's own file or event.rs): plain data
-pub enum UserEvent { Registered { user_id: UserId, email: String } }
+// domain/user/events.rs: plain data
+pub enum UserEvent { Registered { user_id: UserId, email: Email } }
 
-// the use case saves the aggregate, then publishes through a port
+// domain/user/user_entity.rs: the operation records the event
+pub fn create(email: Email) -> Self { /* … */ user.record(UserEvent::Registered { user_id: id, email }); user }
+
+// usecase: unchanged. `save` writes the row and the outbox entry in one transaction.
+let user = User::create(email);
 self.user_repo.save(&user).await?;
-self.events.publish(UserEvent::Registered { user_id: user.id(), email: user.email().to_string() }).await?;   // port: Arc<dyn EventPublisher>
 ```
+
+The use case never calls a broker after `save`; that would be a second write with no shared transaction (`../architecture/messaging.md` § 4).
 
 A second change that should "react" to the first is usually a **consumer of the event**, not a second write inside the same use case (`../architecture/use-cases-and-ports.md` § 9). Reaching for a Unit of Work is opt-in and needs the user's agreement first; the starter does not ship one.
 

@@ -176,6 +176,22 @@ const cases = [
     (r) => addCode(r, `${DOMAIN}/user/user_entity.rs`, 'pub type Fallible = anyhow::Result<()>;')],
   ['Default on a value object', 'no-default-entity-vo',
     (r) => addCode(r, `${DOMAIN}/user/email_vo.rs`, 'impl Default for Email { fn default() -> Self { Self(String::new()) } }')],
+  ['a broker client in the usecase manifest', 'forbidden-crate',
+    (r) => edit(r, 'crates/usecase/Cargo.toml', (s) => s.replace('domain.workspace = true', 'domain.workspace = true\nrdkafka = "0.36"'))],
+  ['a broker client used in domain source', 'forbidden-crate',
+    (r) => addCode(r, `${DOMAIN}/user/user_entity.rs`, 'pub type Channel = lapin::Channel;')],
+  ['a hyphenated broker crate used in use case source', 'forbidden-crate',
+    (r) => addCode(r, `${USECASE}/user/create_user.rs`, 'pub(crate) type Nats = async_nats::Client;')],
+  ['a publisher port without Send + Sync', 'port-send-sync',
+    (r) => writeFileSync(join(r, `${DOMAIN}/user/user_event_publisher.rs`), 'pub trait UserEventPublisher {\n    fn publish(&self);\n}\n')],
+  ['an unexpected file in an infra/messaging feature', 'naming-suffix',
+    (r) => { mkdirSync(join(r, `${INFRA}/messaging/user`), { recursive: true }); writeFileSync(join(r, `${INFRA}/messaging/user/user_helpers.rs`), ''); }],
+  ['a publisher without its in-memory fake', 'missing-in-memory-publisher',
+    (r) => { mkdirSync(join(r, `${INFRA}/messaging/user`), { recursive: true }); writeFileSync(join(r, `${INFRA}/messaging/user/broker_user_event_publisher.rs`), ''); }],
+  ['two consumers in one file', 'consumer-shape',
+    (r) => { mkdirSync(join(r, `${INFRA}/messaging/user`), { recursive: true }); writeFileSync(join(r, `${INFRA}/messaging/user/welcome_user_consumer.rs`), 'pub async fn welcome_user_consumer() {}\npub async fn other_consumer() {}\n'); }],
+  ['a consumer that maps an error itself', 'consumer-no-error-mapping',
+    (r) => { mkdirSync(join(r, `${INFRA}/messaging/user`), { recursive: true }); writeFileSync(join(r, `${INFRA}/messaging/user/welcome_user_consumer.rs`), 'pub async fn welcome_user_consumer() -> Result<(), ()> { Err(()) }\n'); }],
 ];
 
 for (const [name, rule, mutate] of cases) {
@@ -221,6 +237,21 @@ test('a Mutex inside an infra adapter is allowed', () => {
   const rules = rulesAfter((root) =>
     addCode(root, `${INFRA}/persistence/db_error.rs`, 'pub(crate) struct Cache { inner: std::sync::Mutex<Vec<u8>> }'));
   assert.ok(!rules.includes('no-interior-mutability'), `got [${rules.join(', ')}]`);
+});
+
+test('a messaging feature with publisher, fake, mapping and consumer is clean', () => {
+  const rules = rulesAfter((root) => {
+    const dir = join(root, `${INFRA}/messaging/user`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'mod.rs'), '');
+    writeFileSync(join(dir, 'broker_user_event_publisher.rs'), '');
+    writeFileSync(join(dir, 'in_memory_user_event_publisher.rs'), '');
+    writeFileSync(join(dir, 'user_message.rs'), '');
+    writeFileSync(join(dir, 'welcome_user_consumer.rs'), 'pub async fn welcome_user_consumer(m: Msg) -> Result<(), ConsumeError> {\n    let _p: Payload = m.json()?;\n    Ok(())\n}\n');
+    writeFileSync(join(root, `${INFRA}/messaging/kafka_producer.rs`), '');
+    writeFileSync(join(root, `${DOMAIN}/user/user_event_publisher.rs`), 'pub trait UserEventPublisher: Send + Sync {\n    fn publish(&self);\n}\n');
+  });
+  assert.deepEqual(rules, []);
 });
 
 test('test modules are exempt from the I/O ban', () => {

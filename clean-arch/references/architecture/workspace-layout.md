@@ -62,6 +62,8 @@ backend/
           in_memory_user_queries.rs
         gateway/                     # external API adapters: <provider>_<concept>_gateway.rs
         persistence/                 # db_error.rs, transaction plumbing
+        messaging/                   # opt-in, messaging.md: producers, subscribers, outbox relay, disposition.rs
+          <feature>/                 # <feature>_message.rs, *_publisher.rs + fake, *_consumer.rs
     app/                             # binary — composition root
       Cargo.toml
       src/
@@ -99,7 +101,7 @@ Same folders, same file names, same rules. The difference: modules of one crate 
 | `infra`   | `domain`, `usecase`       | anything: `axum`, `sqlx`, `reqwest`, `tracing`, …                     |
 | `app`     | all three                 | `anyhow`, `tokio`, `tracing-subscriber`, …                            |
 
-I/O crates are: `sqlx`, `diesel`, `sea-orm`, `tokio-postgres`, `rusqlite`, `mongodb`, `redis`, `axum`, `actix-web`, `warp`, `rocket`, `hyper`, `tower`, `tower-http`, `reqwest`, `ureq`, `tokio`. `std::fs`, `std::net`, `std::process` and `std::env` count too.
+I/O crates are: `sqlx`, `diesel`, `sea-orm`, `tokio-postgres`, `rusqlite`, `mongodb`, `redis`, `axum`, `actix-web`, `warp`, `rocket`, `hyper`, `tower`, `tower-http`, `reqwest`, `ureq`, `tokio`, and the broker clients `rdkafka`, `lapin`, `async-nats`, `aws-sdk-sqs`, `aws-sdk-sns`, `aws-config`. `std::fs`, `std::net`, `std::process` and `std::env` count too.
 
 `[dev-dependencies]` are exempt — see § 5.
 
@@ -120,6 +122,9 @@ Files are `snake_case`. Types are `PascalCase`. No `I` prefix on traits.
 | Queries (trait)     | `domain/<feature>/<feature>_queries.rs`           | `trait FeatureQueries` + read models   |
 | Gateway (trait)     | `domain/<feature>/<concept>_gateway.rs`           | `trait ConceptGateway`                 |
 | Errors              | `domain/<feature>/errors.rs`                      | `enum FeatureError`                    |
+| Domain events       | `domain/<feature>/events.rs`                      | `enum FeatureEvent`                    |
+| Event envelope      | `domain/shared/event.rs`                          | `struct Recorded<E>`                   |
+| Event publisher (trait) | `domain/<feature>/<feature>_event_publisher.rs` | `trait FeatureEventPublisher`        |
 | Use case + DTOs     | `usecase/<feature>/<action>_<feature>.rs`         | `ActionFeatureInput`, `ActionFeatureOutput`, `ActionFeatureUseCase` |
 | Repository (impl)   | `infra/repository/<feature>/<provider>_<feature>_repository.rs` | `struct ProviderFeatureRepository` |
 | Repository (fake)   | `infra/repository/<feature>/in_memory_<feature>_repository.rs`  | `struct InMemoryFeatureRepository` |
@@ -128,6 +133,12 @@ Files are `snake_case`. Types are `PascalCase`. No `I` prefix on traits.
 | Handler             | `infra/http/<feature>/<action>_<feature>_handler.rs` | `async fn action_feature_handler`   |
 | Routes              | `infra/http/<feature>/<feature>_routes.rs`        | `fn feature_routes(deps) -> Router`    |
 | Gateway (impl)      | `infra/gateway/<provider>_<concept>_gateway.rs`   | `struct ProviderConceptGateway`        |
+| Event → message     | `infra/messaging/<feature>/<feature>_message.rs`  | wire structs + `impl TryFrom<&Recorded<FeatureEvent>> for OutboundMessage` |
+| Event publisher (impl/fake) | `infra/messaging/<feature>/broker_<feature>_event_publisher.rs`, `in_memory_<feature>_event_publisher.rs` | `struct BrokerFeatureEventPublisher` |
+| Consumer            | `infra/messaging/<feature>/<action>_<feature>_consumer.rs` | `async fn action_feature_consumer` |
+| Producer, subscriber | `infra/messaging/<broker>_producer.rs`, `<broker>_subscriber.rs` (`kafka`, `rabbitmq`, `nats`, `sqs`) | `struct KafkaProducer`, … |
+
+Messaging rows are opt-in; see `messaging.md`.
 
 Choices worth knowing, all deliberate:
 
@@ -243,4 +254,5 @@ Where this skill is stricter than those projects: entities have private fields a
 - `domain-modeling.md` — entities, value objects, IDs, errors.
 - `use-cases-and-ports.md` — use case shape, DTOs, repository / queries / gateway traits.
 - `infra-axum-sqlx.md` — handlers, error mapping, auth, sqlx repositories, composition root.
+- `messaging.md` — domain events, the outbox, Kafka / RabbitMQ / NATS / SQS producers and consumers.
 - `anti-patterns.md` — what to avoid, and which gate catches it.

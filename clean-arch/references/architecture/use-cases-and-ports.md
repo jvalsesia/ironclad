@@ -120,7 +120,7 @@ No service locator, no global: never a `static POOL`, `OnceLock<Config>` or `laz
 
 ## 4. Ports
 
-All three kinds are traits declared in `domain/<feature>/` and implemented in `infra`.
+All four kinds are traits declared in `domain/<feature>/` and implemented in `infra`.
 
 ### Repository — write side
 
@@ -179,9 +179,21 @@ pub trait TranscriptionGateway: Send + Sync {
 
 The trait speaks domain types only. The implementation (`infra/gateway/openai_transcription_gateway.rs`) owns the HTTP client, the API key (received through its constructor) and the provider's wire format.
 
+### Event publisher — only when publishing is the only write
+
+```rust
+// crates/domain/src/report/report_event_publisher.rs
+#[async_trait]
+pub trait ReportEventPublisher: Send + Sync {
+    async fn publish(&self, event: &Recorded<ReportEvent>) -> Result<(), AppError>;
+}
+```
+
+Opt-in, like the broker behind it. Use it only when the use case saves nothing else; an event that accompanies a `save` goes through the outbox instead (§ 9). The implementation (`infra/messaging/<feature>/broker_<feature>_event_publisher.rs`) and its in-memory fake are in `messaging.md` § 5.
+
 ### Which one?
 
-**Repository** when the use case mutates what it loads, needs the entity to enforce a rule, or checks uniqueness before a write. **Queries** when it only reads for display. The same feature normally has both.
+**Repository** when the use case mutates what it loads, needs the entity to enforce a rule, or checks uniqueness before a write. **Queries** when it only reads for display. The same feature normally has both. **Gateway** for a call to an external system that answers. **Event publisher** for a fire-and-forget event that is the use case's only effect.
 
 ---
 
@@ -291,6 +303,8 @@ Default: **one aggregate, one `save`, one transaction.** When saving an aggregat
 
 A use case that must change two aggregates atomically is rare, and usually a sign that the aggregate boundary is wrong or that the second change should react to a domain event.
 
+**Events go through the outbox.** When a change must be announced to other services (Kafka, RabbitMQ, NATS, SQS), the entity records the event and the repository's `save` writes it to an outbox table in the same transaction; a relay publishes it afterwards. The use case never calls a broker after `save`: that is a second write with no shared transaction. Opt-in; see `messaging.md` § 4.
+
 When it is genuinely needed, a Unit of Work is opt-in: the trait goes in `domain/shared/unit_of_work.rs` (already on the whitelist) and the implementation in `infra/persistence/`. **The Rust starter does not ship one.** Passing a transaction across `Arc<dyn Trait>` ports has more than one reasonable design in Rust and each has real costs, so stop and agree on it with the user before building it.
 
 ---
@@ -311,3 +325,4 @@ When it is genuinely needed, a Unit of Work is opt-in: the trait goes in `domain
 
 - `domain-modeling.md` — entities, VOs, `AppError`.
 - `infra-axum-sqlx.md` — implementing the ports, handlers, wiring.
+- `messaging.md` — domain events, the outbox, broker producers and consumers.
